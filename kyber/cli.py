@@ -39,6 +39,11 @@ def init(check_only: bool = typer.Option(False, help="Only report status, change
             typer.echo(f"  [..] {detail}")
         else:
             typer.echo(f"  [..] {detail} — run `kyber sandbox build`")
+        ok, detail = onboard.sandbox_identity_status()
+        if ok:
+            typer.echo(f"  [ok] {detail}")
+        elif ok is False:
+            typer.echo(f"  [..] {detail}")
     else:
         typer.echo("  [..] docker CLI not found — containers unavailable; "
                    "use `kyber sandbox up --backend local --allow-unsafe --name demo`")
@@ -95,6 +100,9 @@ def doctor():
     lines.append(f"sandbox image: {detail}")
     if ok is False:
         lines.append("  build it with: kyber sandbox build")
+    ok, detail = onboard.sandbox_identity_status()
+    if ok is False:
+        lines.append(f"identity layer: {detail}")
     lines.append("local backend: available (opt-in unsafe, needs --allow-unsafe)")
     keys = onboard.passthrough_keys_present()
     lines.append("agent keys: {}".format(", ".join(keys) if keys else "none in env"))

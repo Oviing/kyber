@@ -17,6 +17,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN useradd -u 65532 -m sandbox || true
 RUN mkdir -p /work /home/sandbox && chown 65532:65532 /work /home/sandbox && chmod 755 /work
 
+# Distinctive terminal identity (colored prompt, tab title, entry banner).
+# Cosmetic only — isolation stays the container boundary. Old images without
+# this layer still work; the prompt just lacks the identity styling.
+COPY --chown=65532:65532 bashrc.sandbox /home/sandbox/.bashrc
+LABEL kyber.identity="1"
+
 USER 65532
 WORKDIR /work
 CMD ["sleep", "3600"]

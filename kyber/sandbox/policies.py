@@ -12,7 +12,8 @@ Two modes:
   - ``cap_drop: ALL``, ``no-new-privileges``, non-root user
   - ``pids_limit`` + memory/cpu caps
   - per-session bridge network, destroyed with the container
-  - no host bind-mounts except one dedicated workspace volume (``/work``)
+  - /work maps to exactly one source: a dedicated named volume, or one
+    explicit host dir via `up --mount` (validated: never $HOME, /, or ~/.kyber)
   - ``tmpfs`` on ``/tmp`` so the rootfs can stay writable without host writes
 """
 from __future__ import annotations
@@ -51,6 +52,12 @@ MAX_FINDING_EVIDENCE_CHARS = 2000
 SANDBOX_IMAGE = "kyber-sandbox:latest"
 SANDBOX_WORKDIR = "/work"
 SANDBOX_TMPFS = {"/tmp": "size=256m,mode=1777"}
+
+# Env var carrying the session name into the container (colors the prompt,
+# tab title, and entry banner via the baked ~/.bashrc identity layer).
+SANDBOX_NAME_VAR = "KYBER_SANDBOX_NAME"
+# Image label marking builds that contain the identity layer (`kyber.identity=1`).
+IDENTITY_LABEL = "kyber.identity"
 
 # Host env vars passed through into the sandbox so the user can run their
 # own terminal agent (opencode / claude / codex / ...) with their own keys.
@@ -117,12 +124,13 @@ def sandbox_container_kwargs(
     image: str = SANDBOX_IMAGE,
     limits: SandboxLimits = OPEN_LIMITS,
     workspace_volume: Optional[str] = None,
+    host_mount: Optional[str] = None,
     env: Optional[dict] = None,
 ) -> dict:
     """kwargs for a general agent sandbox container.
 
-    Never mounts docker.sock or any host path except the dedicated
-    workspace volume at /work.
+    Never mounts docker.sock. /work maps to exactly one source: either the
+    dedicated named workspace volume or one explicit host dir (``--mount``).
     """
     kwargs = container_kwargs(image, name, network, limits)
     kwargs.update(
@@ -134,7 +142,9 @@ def sandbox_container_kwargs(
             "privileged": False,
         }
     )
-    if workspace_volume:
+    if host_mount:
+        kwargs["volumes"] = {host_mount: {"bind": SANDBOX_WORKDIR, "mode": "rw"}}
+    elif workspace_volume:
         kwargs["volumes"] = {workspace_volume: {"bind": SANDBOX_WORKDIR, "mode": "rw"}}
     if env:
         kwargs["environment"] = dict(env)

@@ -94,3 +94,23 @@ def sandbox_image_status(timeout: int = 10) -> tuple[Optional[bool], str]:
 def passthrough_keys_present(env: Optional[dict] = None) -> list[str]:
     src = env if env is not None else os.environ
     return [k for k in policies.PASSTHROUGH_ENV_KEYS if src.get(k)]
+
+
+def sandbox_identity_status(image: str = SANDBOX_IMAGE) -> tuple[Optional[bool], str]:
+    """Does the sandbox image carry the terminal identity layer?
+
+    True = branded prompt/banner present; False = image predates the layer
+    (rebuild to get it); None = cannot tell (no daemon).
+    """
+    from kyber.sandbox import shell as shell_mod
+
+    try:
+        present = shell_mod.image_identity_present(image)
+    except Exception as e:
+        return None, f"identity check failed ({e})"
+    if present:
+        return True, "terminal identity layer present (branded prompt + banner)"
+    ok, _ = docker_daemon_status()
+    if not ok:
+        return None, "identity layer unknown (daemon unreachable)"
+    return False, "image predates the terminal identity layer — run `kyber sandbox build`"

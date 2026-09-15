@@ -103,3 +103,17 @@ def test_onboard_image_present_and_missing(monkeypatch):
 def test_socket_hint_respects_docker_host(monkeypatch):
     monkeypatch.setenv("DOCKER_HOST", "ssh://builder@10.0.0.5")
     assert docker_env.socket_hint() == "ssh://builder@10.0.0.5"
+
+
+def test_onboard_identity_status_branches(monkeypatch):
+    from kyber import onboard
+    from kyber.sandbox import shell as shell_mod
+
+    monkeypatch.setattr(shell_mod, "image_identity_present", lambda tag="x": True)
+    ok, _ = onboard.sandbox_identity_status()
+    assert ok is True
+    monkeypatch.setattr(shell_mod, "image_identity_present", lambda tag="x": False)
+    monkeypatch.setattr(onboard, "docker_daemon_status", lambda timeout=5: (True, "up"))
+    ok, detail = onboard.sandbox_identity_status()
+    assert ok is False
+    assert "build" in detail

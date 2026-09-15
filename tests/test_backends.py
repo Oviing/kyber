@@ -5,6 +5,12 @@ from kyber.sandbox import backends, docker_env, local
 from kyber.sandbox.common import SandboxError
 
 
+@pytest.fixture(autouse=True)
+def _no_real_docker(monkeypatch):
+    """Isolate from any real daemon/containers on the dev machine."""
+    monkeypatch.setattr(backends, "_docker_has", lambda name: False)
+
+
 def test_resolve_explicit():
     assert backends.resolve("docker") == "docker"
     assert backends.resolve("local") == "local"
@@ -71,3 +77,27 @@ def test_list_all_merges_backends(tmp_path, monkeypatch):
     monkeypatch.setattr(shell_mod, "list_sessions", lambda client=None: [])
     names = [(s.backend, s.name) for s in backends.list_all("auto")]
     assert ("local", "zz-local") in names
+
+
+def test_up_mount_rejected_for_local_backend(tmp_path, monkeypatch):
+    monkeypatch.setenv("KYBER_HOME", str(tmp_path))
+    with pytest.raises(SandboxError, match="--mount is a docker-backend option"):
+        backends.up("demo", backend="local", allow_unsafe=True, mount=str(tmp_path))
+
+
+def test_up_mount_passes_through_to_docker(monkeypatch, tmp_path):
+    from kyber.sandbox import shell as shell_mod
+
+    ws = tmp_path / "proj"
+    ws.mkdir()
+    seen = {}
+
+    def fake_up(name, **kwargs):
+        seen.update(kwargs)
+        from kyber.sandbox.common import SandboxInfo
+        return SandboxInfo(name=name, container="c", network="n",
+                           volume=kwargs.get("host_mount") or "v", image="i")
+
+    monkeypatch.setattr(shell_mod, "up", fake_up)
+    backends.up("demo", backend="docker", mount=str(ws))
+    assert seen.get("host_mount") == str(ws)

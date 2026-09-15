@@ -41,3 +41,14 @@ def test_passthrough_env_only_keys():
     env = policies.passthrough_env({"ANTHROPIC_API_KEY": "sk-x", "EVIL": "1",
                                     "HOME": "/root"})
     assert env == {"ANTHROPIC_API_KEY": "sk-x"}
+
+
+def test_host_mount_replaces_named_volume():
+    kw = policies.sandbox_container_kwargs("n", "net", workspace_volume="vol",
+                                           host_mount="/tmp/proj")
+    assert kw["volumes"] == {"/tmp/proj": {"bind": "/work", "mode": "rw"}}
+
+
+def test_named_volume_default_unchanged():
+    kw = policies.sandbox_container_kwargs("n", "net", workspace_volume="vol")
+    assert kw["volumes"] == {"vol": {"bind": "/work", "mode": "rw"}}

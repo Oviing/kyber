@@ -1,0 +1,27 @@
+# Kyber sandbox identity — cosmetic only. The real isolation is the container.
+# Sourced for interactive shells of the `sandbox` user. Non-interactive shells
+# (kyber exec, scripts) return early so machine output stays clean.
+case $- in
+  *i*) ;;
+  *) return 0 ;;
+esac
+
+export KYBER_SANDBOX_NAME="${KYBER_SANDBOX_NAME:-sandbox}"
+C_MAGENTA='\[\e[1;35m\]'
+C_CYAN='\[\e[1;36m\]'
+C_RESET='\[\e[0m\]'
+PS1="${C_MAGENTA}⬢ kyber/${KYBER_SANDBOX_NAME}${C_CYAN} \w${C_RESET} \$ "
+PROMPT_COMMAND='printf "\e]0;⬢ kyber sandbox: %s\a" "$KYBER_SANDBOX_NAME"'
+alias ls='ls --color=auto'
+alias ll='ls -la --color=auto'
+
+# Banner once per shell (guard survives `exec bash` chains).
+if [ -n "$KYBER_SANDBOX_BANNER_SHOWN" ]; then
+  return 0
+fi
+export KYBER_SANDBOX_BANNER_SHOWN=1
+printf '\e[1;35m╭──────────────────────────────────────────────────╮\n'
+printf '│ ⬢ KYBER SANDBOX  %-34s │\n' "$KYBER_SANDBOX_NAME"
+printf '│ isolated container — anything goes in here.        │\n'
+printf '│ host untouched except /work.  `exit` to leave.     │\n'
+printf '╰──────────────────────────────────────────────────╯\e[0m\n'

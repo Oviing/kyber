@@ -1,8 +1,17 @@
+import pytest
 from typer.testing import CliRunner
 
 from kyber.cli import app
 
 runner = CliRunner()
+
+
+@pytest.fixture(autouse=True)
+def _no_real_docker(monkeypatch):
+    """Isolate CLI end-to-end tests from any real daemon/containers."""
+    from kyber.sandbox import backends
+
+    monkeypatch.setattr(backends, "_docker_has", lambda name: False)
 
 
 def test_help_lists_sandbox():
@@ -77,3 +86,47 @@ def test_sandbox_up_auto_without_daemon_names_local_retry(monkeypatch):
     result = runner.invoke(app, ["sandbox", "up", "--name", "demo"])
     assert result.exit_code == 1
     assert "--backend local --allow-unsafe" in result.output
+
+
+def test_sandbox_help_lists_view():
+    result = runner.invoke(app, ["sandbox", "--help"])
+    assert result.exit_code == 0
+    assert "view" in result.output
+
+
+def test_sandbox_view_once_end_to_end(monkeypatch, tmp_path):
+    monkeypatch.setenv("KYBER_HOME", str(tmp_path))
+    up = runner.invoke(
+        app, ["sandbox", "up", "--backend", "local", "--allow-unsafe", "--name", "demo"])
+    assert up.exit_code == 0, up.output
+    result = runner.invoke(app, ["sandbox", "view", "--backend", "local", "demo", "--once"])
+    assert result.exit_code == 0, result.output
+    assert "demo" in result.output
+
+
+def test_sandbox_up_mount_passes_through(monkeypatch, tmp_path):
+    from kyber.sandbox import backends as backends_mod
+
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    seen = {}
+
+    def fake_up(name, **kwargs):
+        seen.update(kwargs)
+        from kyber.sandbox.common import SandboxInfo
+        return SandboxInfo(name=name, container="c", network="n",
+                           volume=kwargs.get("mount") or "v", image="i",
+                           backend="docker")
+
+    monkeypatch.setattr(backends_mod, "up", fake_up)
+    result = runner.invoke(app, ["sandbox", "up", "--name", "demo", "--mount", str(proj)])
+    assert result.exit_code == 0, result.output
+    assert seen.get("mount") == str(proj)
+    assert "host mount" in result.output
+
+
+def test_sandbox_up_mount_error_is_clean(monkeypatch, tmp_path):
+    result = runner.invoke(
+        app, ["sandbox", "up", "--backend", "docker",
+              "--name", "demo", "--mount", str(tmp_path / "nope")])
+    assert result.exit_code != 0

@@ -57,7 +57,7 @@ def _docker_has(name: str) -> bool:
 def up(name: str, backend: str = "auto", image: Optional[str] = None,
        offline: bool = False, memory: str = "1g", cpus: float = 1.0,
        allow_unsafe: bool = False, env: Optional[dict] = None,
-       build: bool = False) -> SandboxInfo:
+       build: bool = False, mount: Optional[str] = None) -> SandboxInfo:
     if not valid_name(name):
         raise SandboxError(
             f"invalid sandbox name {name!r}: use letters/digits/_/- (max 64, start alnum)")
@@ -69,7 +69,11 @@ def up(name: str, backend: str = "auto", image: Optional[str] = None,
         if build:
             shell.build_image(tag=image or shell.SANDBOX_IMAGE)
         return shell.up(name, image=image or shell.SANDBOX_IMAGE,
-                        offline=offline, memory=memory, cpus=cpus, env=env)
+                        offline=offline, memory=memory, cpus=cpus, env=env,
+                        host_mount=mount)
+    if mount:
+        raise SandboxError("--mount is a docker-backend option; the local backend "
+                           "already works on host directories (its workspace IS one)")
     if _docker_has(name):
         raise SandboxError(f"sandbox {name!r} already exists in the docker backend "
                            f"(kyber sandbox shell --backend docker {name})")

@@ -79,6 +79,21 @@ def _docker(client=None):
             "`kyber sandbox up --backend local --allow-unsafe --name demo`") from e
 
 
+def validate_host_mount(path: str) -> str:
+    """Validate an explicit `--mount` host dir. Returns its absolute path."""
+    from kyber.sandbox.common import home_dir as _kyber_home
+
+    abs_path = os.path.abspath(os.path.expanduser(path or ""))
+    if not os.path.isdir(abs_path):
+        raise SandboxError(f"--mount needs an existing directory, got {path!r}")
+    protected = {"/", os.path.expanduser("~"), _kyber_home()}
+    if abs_path in protected or abs_path.startswith(_kyber_home() + os.sep):
+        raise SandboxError(
+            f"refusing to mount {abs_path!r} as /work (host home / kyber state are off-limits). "
+            "Pick a project directory instead.")
+    return abs_path
+
+
 def up(
     name: str,
     image: str = SANDBOX_IMAGE,
@@ -87,9 +102,13 @@ def up(
     cpus: float = OPEN_LIMITS.cpus,
     keep_volume: bool = True,  # kept for symmetry with down(); volumes persist by default
     env: Optional[dict] = None,
+    host_mount: Optional[str] = None,
     client=None,
 ) -> SandboxInfo:
-    """Create network + workspace volume + hardened container. Idempotent-ish.
+    """Create network + workspace (/work) + hardened container.
+
+    /work maps to exactly one source: a dedicated named volume, or one
+    explicit host dir via ``host_mount`` (validated, never $HOME//~/.kyber).
 
     Raises SandboxError with an actionable message (never a traceback).
     Full egress by default; ``offline=True`` creates an internal network.
@@ -98,6 +117,7 @@ def up(
     if not valid_name(name):
         raise SandboxError(
             f"invalid sandbox name {name!r}: use letters/digits/_/- (max 64, start alnum)")
+    mount_src = validate_host_mount(host_mount) if host_mount else None
     limits = policies.SandboxLimits(
         memory=memory, cpus=cpus, pids_limit=OPEN_LIMITS.pids_limit, readonly_rootfs=False)
     cname, nname, vname = container_name(name), network_name(name), volume_name(name)
@@ -121,20 +141,24 @@ def up(
     except Exception as e:
         raise SandboxError(f"could not create network: {e}") from e
     try:
-        try:
-            dc.volumes.get(vname)
-        except Exception:
-            dc.volumes.create(vname, labels={LABEL: name})
+        if mount_src is None:
+            try:
+                dc.volumes.get(vname)
+            except Exception:
+                dc.volumes.create(vname, labels={LABEL: name})
         kwargs = policies.sandbox_container_kwargs(
             cname, nname, image=image, limits=limits,
-            workspace_volume=vname, env=env)
+            workspace_volume=None if mount_src else vname,
+            host_mount=mount_src, env=env)
         kwargs["labels"] = {LABEL: name}
         dc.containers.run(**kwargs)
     except Exception as e:
         down(name, client=dc)
         raise SandboxError(f"sandbox up failed: {e}") from e
-    _audit("up", f"{name} image={image} offline={offline}")
-    return SandboxInfo(name=name, container=cname, network=nname, volume=vname, image=image)
+    _audit("up", f"{name} image={image} offline={offline} "
+                 f"work={'mount:' + mount_src if mount_src else 'volume:' + vname}")
+    return SandboxInfo(name=name, container=cname, network=nname,
+                       volume=mount_src or vname, image=image)
 
 
 def exec_cmd(name: str, cmd: str, timeout: int = 60, client=None) -> tuple[int, str]:
@@ -150,7 +174,8 @@ def exec_cmd(name: str, cmd: str, timeout: int = 60, client=None) -> tuple[int, 
         raise SandboxError(f"sandbox {name!r} not found (kyber sandbox up --name {name})") from e
     _audit("exec", f"{name} {cmd[:200]}")
     try:
-        result = container.exec_run(cmd, demux=False)
+        # argv form (no shell string-splitting): pipes, &&, quotes all work.
+        result = container.exec_run(["sh", "-c", cmd], demux=False)
         code, out = result.exit_code, result.output
     except Exception as e:
         raise SandboxError(f"exec failed: {e}") from e
@@ -159,12 +184,16 @@ def exec_cmd(name: str, cmd: str, timeout: int = 60, client=None) -> tuple[int, 
 
 
 def shell_argv(name: str) -> list[str]:
-    """`docker exec -it` argv for an interactive shell (TTY passthrough)."""
+    """`docker exec -it` argv for an interactive shell (TTY passthrough).
+
+    Injects KYBER_SANDBOX_NAME so the baked identity layer (colored prompt,
+    tab title, entry banner) names the session. Old images without the layer
+    degrade gracefully to a plain bash prompt.
+    """
     if not valid_name(name):
         raise SandboxError(f"invalid sandbox name {name!r}")
-    motd = policies.SANDBOX_MOTD.replace("'", "'\"'\"'")
-    return ["docker", "exec", "-it", container_name(name),
-            "bash", "-c", f"echo '{motd}' && exec bash"]
+    return ["docker", "exec", "-e", f"{policies.SANDBOX_NAME_VAR}={name}",
+            "-it", container_name(name), "bash"]
 
 
 def logs(name: str, tail: int = 100, client=None) -> str:
@@ -206,11 +235,41 @@ def list_sessions(client=None) -> list[SandboxInfo]:
         if isinstance(status, str) and callable(getattr(c, "status", None)):
             status = "unknown"
         found.append(SandboxInfo(name=sname, container=cname,
-                                 network=network_name(sname), volume=volume_name(sname),
+                                 network=network_name(sname),
+                                 volume=_work_source(c, volume_name(sname)),
                                  image=",".join(getattr(c, "image", None) and
                                                 getattr(c.image, "tags", []) or []),
                                  status=str(status)))
     return sorted(found, key=lambda s: s.name)
+
+
+def _work_mount(container, vname: str) -> tuple[str, bool]:
+    """(source, uses_named_volume) for /work.
+
+    Named docker volumes inspect with Type=volume and a resolved host path as
+    Source (not the volume name), so the flag keys off Type first and falls
+    back to comparing Source against the volume name (covers fakes/old daemons).
+    """
+    try:
+        mounts = (getattr(container, "attrs", {}) or {}).get("Mounts", []) or []
+    except Exception:
+        return vname, True
+    for m in mounts:
+        if isinstance(m, dict) and m.get("Destination") == policies.SANDBOX_WORKDIR:
+            src = m.get("Source", "") or vname
+            mtype = m.get("Type", "")
+            if mtype == "bind":
+                return src, False
+            if mtype == "volume" or src == vname:
+                return src, True
+            return src, False
+    return vname, True
+
+
+def _work_source(container, fallback: str) -> str:
+    """Resolve what backs /work: named volume or explicit host bind."""
+    src, _ = _work_mount(container, fallback)
+    return src
 
 
 def snapshot(name: str, output_path: str, client=None) -> str:
@@ -238,7 +297,11 @@ def snapshot(name: str, output_path: str, client=None) -> str:
 
 
 def down(name: str, keep_volume: bool = True, client=None) -> str:
-    """Destroy container + network. Workspace volume kept by default."""
+    """Destroy container + network. Named workspace volume kept by default.
+
+    Host bind mounts (`up --mount`) are NEVER deleted — only docker-managed
+    named volumes are.
+    """
     if not valid_name(name):
         raise SandboxError(f"invalid sandbox name {name!r}")
     dc = _docker(client)
@@ -247,6 +310,8 @@ def down(name: str, keep_volume: bool = True, client=None) -> str:
         container = dc.containers.get(cname)
     except Exception:
         container = None
+    uses_named_volume = (
+        container is None or _work_mount(container, vname)[1])
     if container is not None:
         try:
             container.remove(force=True)
@@ -257,13 +322,15 @@ def down(name: str, keep_volume: bool = True, client=None) -> str:
         net.remove()
     except Exception:
         pass
-    if not keep_volume:
+    if not keep_volume and uses_named_volume:
         try:
             vol = dc.volumes.get(vname)
             vol.remove(force=True)
         except Exception:
             pass
     _audit("down", f"{name} keep_volume={keep_volume}")
+    if not uses_named_volume:
+        return f"sandbox {name!r} destroyed (host mount left untouched)"
     return (f"sandbox {name!r} destroyed"
             + (" (workspace kept)" if keep_volume else " (workspace deleted)"))
 
@@ -331,3 +398,24 @@ def image_present(tag: str = SANDBOX_IMAGE, client=None) -> bool:
         return True
     except Exception:
         return False
+
+
+def image_identity_present(tag: str = SANDBOX_IMAGE, timeout: int = 10) -> bool:
+    """Does the image contain the identity layer (`kyber.identity=1` label)?
+
+    False when the daemon is unreachable or the image predates the layer —
+    callers surface a rebuild nudge, never an error.
+    """
+    if not docker_env.cli_found():
+        return False
+    import subprocess
+
+    try:
+        out = subprocess.run(
+            ["docker", "image", "inspect", "--format",
+             f"{{{{ index .Config.Labels \"{policies.IDENTITY_LABEL}\" }}}}",
+             tag],
+            capture_output=True, text=True, timeout=timeout, check=False)
+    except Exception:
+        return False
+    return out.returncode == 0 and (out.stdout or "").strip() == "1"

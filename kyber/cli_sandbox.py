@@ -4,6 +4,8 @@ from __future__ import annotations
 import subprocess
 
 import typer
+from rich.console import Console
+from rich.panel import Panel
 
 from kyber.sandbox import backends, local, policies, shell
 from kyber.sandbox.shell import SandboxError
@@ -24,6 +26,8 @@ def up(
     memory: str = typer.Option("1g", help="Container memory limit (docker backend)"),
     cpus: float = typer.Option(1.0, help="Container CPU limit (docker backend)"),
     build: bool = typer.Option(False, help="Build the sandbox image first (docker backend)"),
+    mount: str = typer.Option("", help="Host dir to bind as /work (docker backend; "
+                               "agent can touch exactly this dir, host tools see it live)"),
 ):
     """Create and start an isolated sandbox."""
     try:
@@ -34,12 +38,14 @@ def up(
             shell.build_image(tag=image)
             typer.echo("Build done.")
         info = backends.up(name, backend=backend, image=image, offline=offline,
-                           memory=memory, cpus=cpus, allow_unsafe=allow_unsafe)
+                           memory=memory, cpus=cpus, allow_unsafe=allow_unsafe,
+                           mount=mount or None)
     except SandboxError as e:
         typer.echo(f"Error: {e}")
         raise typer.Exit(1)
     if info.backend == "docker":
-        typer.echo(f"Sandbox {info.name!r} up (container {info.container}, network {info.network}).")
+        work = f"host mount {info.volume}" if (mount or None) else f"volume {info.volume}"
+        typer.echo(f"Sandbox {info.name!r} up (container {info.container}, {work}).")
         typer.echo(f"Enter it: kyber sandbox shell {info.name}")
     else:
         typer.echo(f"Local sandbox {info.name!r} up at {info.volume} (NOT container-isolated).")
@@ -59,11 +65,17 @@ def shell_cmd(
     except SandboxError as e:
         typer.echo(f"Error: {e}")
         raise typer.Exit(1)
+    console = Console()
     if target == "docker":
-        typer.echo(f"Entering sandbox {name!r} (exit to leave; nothing touches the host except /work).")
+        console.print(Panel(
+            f"Entering sandbox [bold]{name}[/bold] — isolated container.\n"
+            "Nothing touches the host except /work. [bold]exit[/bold] to leave.",
+            title="⬢ kyber sandbox", border_style="magenta"))
     else:
-        typer.echo(local.UNSAFE_WARNING)
-        typer.echo(f"Entering LOCAL sandbox {name!r} (runs as your user; exit to leave).")
+        console.print(Panel(
+            f"Entering [bold]LOCAL[/bold] sandbox [bold]{name}[/bold] — "
+            "runs as your user, NOT container-isolated.",
+            title="⚠ kyber local", border_style="red"))
     try:
         subprocess.run(argv, cwd=cwd, env=env, check=False)
     except OSError as e:
@@ -166,3 +178,22 @@ def build_cmd(
         typer.echo(f"Error: {e}")
         raise typer.Exit(1)
     typer.echo(f"Built {tag}.")
+
+
+@sandbox_app.command("view")
+def view_cmd(
+    name: str = typer.Argument("demo", help="Sandbox session name"),
+    backend: str = typer.Option("auto", help=BACKEND_HELP),
+    interval: float = typer.Option(2.0, help="Refresh interval in seconds (live mode)"),
+    once: bool = typer.Option(False, "--once", help="Print one static snapshot and exit"),
+):
+    """Live read-only dashboard for a sandbox (Ctrl-C to quit)."""
+    from kyber.sandbox import view as view_mod
+
+    try:
+        view_mod.run(name, backend=backend, interval=interval, once=once)
+    except SandboxError as e:
+        typer.echo(f"Error: {e}")
+        raise typer.Exit(1)
+    except KeyboardInterrupt:
+        pass

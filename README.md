@@ -27,9 +27,23 @@ kyber sandbox ls                                # list sessions (docker + local)
 kyber sandbox exec demo --cmd "ls -la /work"    # one command, non-interactive
 kyber sandbox logs demo                         # container logs / audit entries
 kyber sandbox snapshot demo -o demo.tar         # export /work to host
+kyber sandbox view demo                         # live terminal dashboard (Ctrl-C quits)
 kyber sandbox down demo --delete-workspace
 kyber doctor
 ```
+
+## Sandbox terminal identity
+
+You can always tell you're inside the cage: the sandbox shell has a magenta
+`⬢ kyber/<name>` prompt, sets your terminal tab title to `⬢ kyber sandbox:
+<name>`, and prints a banner on entry — plus `kyber sandbox shell` marks the
+transition with a panel on the host side. Purely cosmetic (the real boundary
+is the container), baked into the image: after pulling/building a new image,
+run `kyber sandbox build` once; `kyber doctor` tells you if your image
+predates the identity layer.
+
+`kyber sandbox view <name>` is a live read-only mission view: session,
+`/work` tree, recent logs, audit trail. Nothing there can disturb the session.
 
 Keys: set e.g. `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / `LLM_API_KEY` in your
 shell (or `.env`) before `up` — they are passed into the container only.
@@ -63,6 +77,12 @@ kyber sandbox shell --backend local --allow-unsafe demo
 kyber sandbox exec --backend local --allow-unsafe demo --cmd "pytest -q"
 ```
 
+Host-visible workspace: `kyber sandbox up --name demo --mount ~/projects/demo`
+binds that one host dir as `/work` (docker backend) instead of a sealed
+named volume — the agent can touch exactly that dir, host tools see it live.
+Never `$HOME`, `/`, or `~/.kyber`; `down --delete-workspace` never deletes
+a host mount.
+
 What the local backend does: a workspace at `~/.kyber/workspaces/<name>/`,
 commands run there with a scrubbed env (only `PATH` + your agent API keys —
 `SSH_AUTH_SOCK` etc. never leak in), `HOME` jailed to the workspace, CPU
@@ -79,6 +99,7 @@ exist in both backends at once.
 - `kyber/sandbox/shell.py` docker session runtime (up/shell/exec/logs/snapshot/down/build)
 - `kyber/sandbox/local.py` opt-in unsafe local fallback (no daemon)
 - `kyber/sandbox/backends.py` `--backend auto|docker|local` dispatcher
+- `kyber/sandbox/view.py` live read-only terminal dashboard (`sandbox view`)
 - `kyber/sandbox/common.py` shared errors/session/audit helpers
 - `kyber/sandbox/manager.py` legacy low-level Docker manager (kept, strict mode)
 - `kyber/cli_sandbox.py` `kyber sandbox ...` commands

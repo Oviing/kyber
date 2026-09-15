@@ -25,7 +25,8 @@ class FakeContainer:
 
     def exec_run(self, cmd, demux=False):
         self.exec_calls.append(cmd)
-        return FakeExecResult(0, b"ok:" + cmd.encode()[:20])
+        shown = cmd if isinstance(cmd, str) else " ".join(cmd)
+        return FakeExecResult(0, b"ok:" + shown.encode()[:20])
 
     def logs(self, tail=100):
         return b"logline\n"
@@ -174,10 +175,14 @@ def test_down_delete_workspace():
     assert "kyber-ws-demo" not in dc.volumes.by_name
 
 
-def test_shell_argv_uses_docker_exec():
+def test_shell_argv_uses_docker_exec_with_identity_env():
     argv = shell.shell_argv("demo")
-    assert argv[:3] == ["docker", "exec", "-it"]
+    assert argv[:2] == ["docker", "exec"]
+    assert "-e" in argv
+    assert "KYBER_SANDBOX_NAME=demo" in argv
+    assert "-it" in argv
     assert "kyber-sb-demo" in argv
+    assert argv[-1] == "bash"
 
 
 def test_list_sessions():
@@ -227,3 +232,100 @@ def test_build_image_uses_absolute_dockerfile_and_context(monkeypatch, tmp_path)
     fi = seen["cmd"].index("-f") + 1
     assert os.path.isabs(seen["cmd"][fi])
     assert seen["cmd"][-1] == os.path.dirname(seen["cmd"][fi])
+
+
+def test_validate_host_mount_ok(tmp_path):
+    assert shell.validate_host_mount(str(tmp_path)) == str(tmp_path)
+
+
+def test_validate_host_mount_rejects_missing_and_files(tmp_path):
+    with pytest.raises(SandboxError, match="existing directory"):
+        shell.validate_host_mount(str(tmp_path / "nope"))
+    f = tmp_path / "f.txt"
+    f.write_text("x")
+    with pytest.raises(SandboxError, match="existing directory"):
+        shell.validate_host_mount(str(f))
+
+
+def test_validate_host_mount_refuses_home_and_root(monkeypatch, tmp_path):
+    import os as _os
+
+    monkeypatch.setenv("KYBER_HOME", str(tmp_path / "kh"))
+    with pytest.raises(SandboxError, match="off-limits"):
+        shell.validate_host_mount(_os.path.expanduser("~"))
+    with pytest.raises(SandboxError, match="off-limits"):
+        shell.validate_host_mount("/")
+    nested = tmp_path / "kh" / "workspaces" / "demo"
+    nested.mkdir(parents=True)
+    with pytest.raises(SandboxError, match="off-limits"):
+        shell.validate_host_mount(str(nested))
+
+
+def test_up_with_host_mount_binds_dir_and_skips_volume(tmp_path):
+    dc = FakeDocker()
+    ws = tmp_path / "proj"
+    ws.mkdir()
+    info = shell.up("demo", host_mount=str(ws), client=dc)
+    assert info.volume == str(ws)
+    run = dc.containers.runs[0]
+    assert run["volumes"] == {str(ws): {"bind": "/work", "mode": "rw"}}
+    assert "kyber-ws-demo" not in dc.volumes.by_name
+
+
+def test_down_never_deletes_host_mount(tmp_path):
+    dc = FakeDocker()
+    ws = tmp_path / "proj"
+    ws.mkdir()
+    shell.up("demo", host_mount=str(ws), client=dc)
+    dc.containers.by_name["kyber-sb-demo"].attrs["Mounts"] = [
+        {"Destination": "/work", "Source": str(ws)}]
+    msg = shell.down("demo", keep_volume=False, client=dc)
+    assert "host mount left untouched" in msg
+    assert ws.is_dir()
+
+
+def test_list_sessions_shows_mount_source(tmp_path):
+    dc = FakeDocker()
+    ws = tmp_path / "proj"
+    ws.mkdir()
+    shell.up("demo", host_mount=str(ws), client=dc)
+    dc.containers.by_name["kyber-sb-demo"].attrs["Mounts"] = [
+        {"Destination": "/work", "Source": str(ws)}]
+    (found,) = shell.list_sessions(client=dc)
+    assert found.volume == str(ws)
+
+
+def test_image_identity_present_branches(monkeypatch):
+    import subprocess as _sp
+
+    class Done:
+        def __init__(self, code, out):
+            self.returncode = code
+            self.stdout = out
+            self.stderr = ""
+
+    monkeypatch.setattr(_sp, "run", lambda *a, **k: Done(0, "1\n"))
+    assert shell.image_identity_present("img") is True
+    monkeypatch.setattr(_sp, "run", lambda *a, **k: Done(0, "<no value>\n"))
+    assert shell.image_identity_present("img") is False
+    monkeypatch.setattr(_sp, "run", lambda *a, **k: Done(1, ""))
+    assert shell.image_identity_present("img") is False
+
+
+def test_exec_runs_through_shell_argv():
+    dc = FakeDocker()
+    shell.up("demo", client=dc)
+    shell.exec_cmd("demo", "a && b | head -1", client=dc)
+    assert dc.containers.by_name["kyber-sb-demo"].exec_calls[-1] == [
+        "sh", "-c", "a && b | head -1"]
+
+
+def test_down_deletes_named_volume_with_resolved_source():
+    dc = FakeDocker()
+    shell.up("demo", client=dc)
+    dc.containers.by_name["kyber-sb-demo"].attrs["Mounts"] = [
+        {"Type": "volume", "Destination": "/work",
+         "Source": "/var/lib/docker/volumes/kyber-ws-demo/_data"}]
+    msg = shell.down("demo", keep_volume=False, client=dc)
+    assert "workspace deleted" in msg
+    assert "kyber-ws-demo" not in dc.volumes.by_name
