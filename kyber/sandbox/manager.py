@@ -5,7 +5,6 @@ import time
 import uuid
 from typing import Optional
 
-from kyber.config import settings
 from kyber.sandbox import policies
 from kyber.sandbox.policies import DEFAULT_LIMITS
 
@@ -115,7 +114,7 @@ class SandboxManager:
             pass
 
     def run_with_cleanup(self, scan_id: str, mode: str, fn, timeout_s: Optional[int] = None):
-        timeout_s = timeout_s or settings.sandbox_timeout_quick
+        timeout_s = timeout_s or 300
         sb = self.provision(scan_id, mode)
         started = time.time()
         try:

@@ -1,0 +1,22 @@
+# Kyber general agent sandbox: a safe room with a full toolchain where the
+# user installs and runs their own terminal AI agent (opencode, claude,
+# codex, aider, ...). The agent is unconstrained INSIDE the container;
+# isolation comes from the container boundary (see kyber/sandbox/policies.py).
+#
+# Build: docker build -f sandbox/images/Dockerfile.sandbox-agent -t kyber-sandbox:latest sandbox/images
+FROM python:3.11-slim
+
+ENV DEBIAN_FRONTEND=noninteractive PYTHONDONTWRITEBYTECODE=1 PIP_NO_CACHE_DIR=1
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    bash curl ca-certificates git vim tmux procps \
+    nodejs npm \
+ && rm -rf /var/lib/apt/lists/*
+
+# Non-root sandbox user (matches policies.SandboxLimits.user).
+RUN useradd -u 65532 -m sandbox || true
+RUN mkdir -p /work /home/sandbox && chown 65532:65532 /work /home/sandbox && chmod 755 /work
+
+USER 65532
+WORKDIR /work
+CMD ["sleep", "3600"]

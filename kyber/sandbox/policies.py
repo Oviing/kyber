@@ -1,16 +1,31 @@
-"""Sandbox security policies: single source of truth for isolation guarantees."""
+"""Sandbox security policies: single source of truth for isolation guarantees.
+
+Two modes:
+
+* ``strict`` (legacy red-team default): read-only rootfs, every exec gated
+  by ``FORBIDDEN_PAYLOADS``. Kept for backward compatibility.
+* ``open`` (general agent sandbox): the terminal agent inside may run
+  ANYTHING (install packages, rm -rf, curl, ...). Safety comes from the
+  *container boundary*, never from command censorship:
+
+  - no ``docker.sock`` mount, ever
+  - ``cap_drop: ALL``, ``no-new-privileges``, non-root user
+  - ``pids_limit`` + memory/cpu caps
+  - per-session bridge network, destroyed with the container
+  - no host bind-mounts except one dedicated workspace volume (``/work``)
+  - ``tmpfs`` on ``/tmp`` so the rootfs can stay writable without host writes
+"""
 from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Optional
 
 BLOCKED_EGRESS_CIDRS = ["169.254.169.254/32", "169.254.170.2/32"]  # cloud metadata
-ALLOWLIST_PROXY_DOMAINS: list[str] = []  # empty = no egress for untrusted code
+ALLOWLIST_PROXY_DOMAINS: list[str] = []  # empty = no egress for untrusted code (strict mode)
 
-# Destructive / out-of-scope patterns the exploiter must NEVER emit.
-# Checked case-insensitively against every sandbox exec (deterministic agents
-# and LLM-driven `sandbox_exec` alike). SSRF probes go through the structured
-# run_probe path, so raw cloud-metadata fetches are blocked here.
+# Destructive / out-of-scope patterns. Only enforced in ``strict`` mode
+# (legacy red-team scans). In ``open`` mode the agent is explicitly allowed
+# to run these *inside* the container.
 FORBIDDEN_PAYLOADS = [
     "rm -rf /",
     "mkfs",
@@ -32,6 +47,30 @@ FORBIDDEN_PAYLOADS = [
 MAX_SNIPPET_BYTES = 1_000_000
 MAX_FINDING_EVIDENCE_CHARS = 2000
 
+# General sandbox defaults.
+SANDBOX_IMAGE = "kyber-sandbox:latest"
+SANDBOX_WORKDIR = "/work"
+SANDBOX_TMPFS = {"/tmp": "size=256m,mode=1777"}
+
+# Host env vars passed through into the sandbox so the user can run their
+# own terminal agent (opencode / claude / codex / ...) with their own keys.
+# Values are read from the host at `up` time; never written to disk.
+PASSTHROUGH_ENV_KEYS = (
+    "LLM_API_KEY",
+    "ANTHROPIC_API_KEY",
+    "OPENAI_API_KEY",
+    "GEMINI_API_KEY",
+    "KYBER_LLM_MODEL",
+    "LLM_MODEL",
+)
+
+# Moto for `kyber sandbox shell`.
+SANDBOX_MOTD = (
+    "Kyber sandbox — isolated container. You can do anything in here; "
+    "nothing touches the host except /work (workspace volume). "
+    "`exit` to leave; `kyber sandbox down <name>` destroys the container."
+)
+
 
 @dataclass(frozen=True)
 class SandboxLimits:
@@ -44,7 +83,11 @@ class SandboxLimits:
     user: str = "65532"  # non-root
 
 
-DEFAULT_LIMITS = SandboxLimits()
+DEFAULT_LIMITS = SandboxLimits()  # strict legacy default
+
+# Open-mode default: writable rootfs (+ tmpfs on /tmp) so the agent can
+# install tools; all other hardening stays on.
+OPEN_LIMITS = SandboxLimits(readonly_rootfs=False)
 
 
 def container_kwargs(image: str, name: str, network: Optional[str], limits: SandboxLimits) -> dict:
@@ -61,9 +104,54 @@ def container_kwargs(image: str, name: str, network: Optional[str], limits: Sand
         "security_opt": ["no-new-privileges"] if limits.no_new_privileges else [],
         "network": network,
     }
+    # Writable-rootfs containers still get a size-capped tmpfs on /tmp so
+    # throwaway writes never touch the host or the image layer unboundedly.
+    if not limits.readonly_rootfs:
+        kwargs["tmpfs"] = dict(SANDBOX_TMPFS)
     return kwargs
 
 
-def is_payload_allowed(cmd: str) -> bool:
-    low = cmd.lower()
+def sandbox_container_kwargs(
+    name: str,
+    network: Optional[str] = None,
+    image: str = SANDBOX_IMAGE,
+    limits: SandboxLimits = OPEN_LIMITS,
+    workspace_volume: Optional[str] = None,
+    env: Optional[dict] = None,
+) -> dict:
+    """kwargs for a general agent sandbox container.
+
+    Never mounts docker.sock or any host path except the dedicated
+    workspace volume at /work.
+    """
+    kwargs = container_kwargs(image, name, network, limits)
+    kwargs.update(
+        {
+            "tty": True,
+            "stdin_open": True,
+            "working_dir": SANDBOX_WORKDIR,
+            "command": "sleep 3600",
+            "privileged": False,
+        }
+    )
+    if workspace_volume:
+        kwargs["volumes"] = {workspace_volume: {"bind": SANDBOX_WORKDIR, "mode": "rw"}}
+    if env:
+        kwargs["environment"] = dict(env)
+    return kwargs
+
+
+def passthrough_env(host_env: Optional[dict] = None) -> dict:
+    """Subset of host env safe to inject into the sandbox (API keys only)."""
+    import os
+
+    src = host_env if host_env is not None else os.environ
+    return {k: src[k] for k in PASSTHROUGH_ENV_KEYS if src.get(k)}
+
+
+def is_payload_allowed(cmd: str, mode: str = "strict") -> bool:
+    """In ``open`` mode every payload is allowed inside the container."""
+    if mode == "open":
+        return True
+    low = (cmd or "").lower()
     return not any(p in low for p in FORBIDDEN_PAYLOADS)

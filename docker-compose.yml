@@ -1,44 +1,7 @@
-services:
-  api:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    command: uvicorn kyber.api.main:app --host 0.0.0.0 --port 8000
-    ports:
-      - "8000:8000"
-    env_file: .env
-    depends_on:
-      - db
-      - redis
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
-      - artifacts:/tmp/kyber-artifacts
-
-  worker:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    command: rq worker --url $REDIS_URL kyber
-    env_file: .env
-    depends_on:
-      - redis
-      - db
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
-      - artifacts:/tmp/kyber-artifacts
-
-  db:
-    image: postgres:16
-    environment:
-      POSTGRES_USER: kyber
-      POSTGRES_PASSWORD: kyber
-      POSTGRES_DB: kyber
-    volumes:
-      - pgdata:/var/lib/postgresql/data
-
-  redis:
-    image: redis:7-alpine
-
-volumes:
-  pgdata:
-  artifacts:
+# No compose services: Kyber is local-first. The CLI talks to the local
+# Docker daemon directly and manages one container + network + volume per
+# sandbox session. Nothing to start here — see `kyber sandbox up`.
+#
+# Build the sandbox image instead:
+#   docker build -f sandbox/images/Dockerfile.sandbox-agent -t kyber-sandbox:latest sandbox/images
+# or: kyber sandbox build
