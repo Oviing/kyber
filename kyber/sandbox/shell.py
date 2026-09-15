@@ -268,7 +268,39 @@ def down(name: str, keep_volume: bool = True, client=None) -> str:
             + (" (workspace kept)" if keep_volume else " (workspace deleted)"))
 
 
-def build_image(dockerfile: str = "sandbox/images/Dockerfile.sandbox-agent",
+DEFAULT_DOCKERFILE = "sandbox/images/Dockerfile.sandbox-agent"
+
+
+def resolve_dockerfile(dockerfile: str = DEFAULT_DOCKERFILE) -> str:
+    """Absolute Dockerfile path, independent of cwd.
+
+    1. As given (covers repo-root checkouts and explicit absolute paths).
+    2. Next to the installed ``kyber`` package's repo root (covers `pip install`
+       + running from anywhere, e.g. ``~/test``).
+    Raises SandboxError listing every location tried.
+    """
+    candidates = [os.path.abspath(os.path.expanduser(dockerfile))]
+    # Only the *default* gets the package fallback: an explicit --dockerfile
+    # that does not exist is a user error, never silently substituted.
+    if dockerfile == DEFAULT_DOCKERFILE:
+        try:
+            import kyber as _pkg
+
+            repo_root = os.path.dirname(os.path.dirname(os.path.abspath(_pkg.__file__)))
+            candidates.append(os.path.join(repo_root, DEFAULT_DOCKERFILE))
+        except Exception:
+            pass
+    seen: list[str] = []
+    for cand in candidates:
+        if cand not in seen:
+            seen.append(cand)
+        if os.path.isfile(cand):
+            return cand
+    tried = ", ".join(seen)
+    raise SandboxError(f"Dockerfile not found (tried: {tried}). Pass --dockerfile explicitly.")
+
+
+def build_image(dockerfile: str = DEFAULT_DOCKERFILE,
                 tag: str = SANDBOX_IMAGE) -> str:
     """Build the sandbox image via `docker build`. Returns the tag."""
     if not docker_env.cli_found():
@@ -277,10 +309,11 @@ def build_image(dockerfile: str = "sandbox/images/Dockerfile.sandbox-agent",
     ok, detail = docker_env.daemon_reachable()
     if not ok:
         raise SandboxError(detail)
+    dockerfile_abs = resolve_dockerfile(dockerfile)
     import subprocess
 
-    cmd = ["docker", "build", "-f", dockerfile, "-t", tag,
-           os.path.dirname(dockerfile) or "."]
+    cmd = ["docker", "build", "-f", dockerfile_abs, "-t", tag,
+           os.path.dirname(dockerfile_abs) or "."]
     proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
     if proc.returncode != 0:
         raise SandboxError(f"docker build failed:\n{(proc.stderr or proc.stdout)[-3000:]}")

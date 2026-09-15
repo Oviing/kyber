@@ -1,4 +1,7 @@
 """Fake-docker tests for the sandbox session runtime (no daemon needed)."""
+import os
+import subprocess
+
 import pytest
 
 from kyber.sandbox import shell
@@ -183,3 +186,44 @@ def test_list_sessions():
     shell.up("a-sb", client=dc)
     names = [s.name for s in shell.list_sessions(client=dc)]
     assert names == sorted(names) and set(names) == {"a-sb", "b-sb"}
+
+
+def test_resolve_dockerfile_from_foreign_cwd(tmp_path, monkeypatch):
+    """Regression: `kyber sandbox build` from ~/test must find the bundled file."""
+    monkeypatch.chdir(tmp_path)  # no sandbox/images here
+    path = shell.resolve_dockerfile()
+    assert os.path.isabs(path)
+    assert os.path.isfile(path)
+    assert path.endswith("Dockerfile.sandbox-agent")
+
+
+def test_resolve_dockerfile_missing_lists_tried_paths(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    with pytest.raises(SandboxError, match="Dockerfile not found"):
+        shell.resolve_dockerfile("nope/Dockerfile.missing")
+
+
+def test_build_image_uses_absolute_dockerfile_and_context(monkeypatch, tmp_path):
+    from kyber.sandbox import docker_env
+
+    monkeypatch.chdir(tmp_path)  # foreign cwd, like ~/test
+    monkeypatch.setattr(docker_env, "cli_found", lambda: True)
+    monkeypatch.setattr(docker_env, "daemon_reachable",
+                        lambda timeout=5: (True, "daemon reachable"))
+    seen = {}
+
+    class Done:
+        returncode = 0
+        stdout = ""
+        stderr = ""
+
+    def fake_run(cmd, **kwargs):
+        seen["cmd"] = cmd
+        return Done()
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    tag = shell.build_image()
+    assert tag == shell.SANDBOX_IMAGE
+    fi = seen["cmd"].index("-f") + 1
+    assert os.path.isabs(seen["cmd"][fi])
+    assert seen["cmd"][-1] == os.path.dirname(seen["cmd"][fi])
