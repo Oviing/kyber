@@ -1,0 +1,19 @@
+# Opencode — baked Linux build + host auth file (no re-login).
+schema: kyber-tool/v1
+id: opencode
+display: Opencode
+description: Open-source terminal agent. Reuses your host provider logins.
+install:
+  - npm install -g opencode-ai
+dirs:
+  - /home/sandbox/.local/share/opencode
+check: opencode --version
+auth:
+  env: []
+  files:
+    - src: ~/.local/share/opencode/auth.json
+      dest: /home/sandbox/.local/share/opencode/auth.json
+      mode: ro
+  notes: >-
+    Mounts your host opencode auth.json read-only. Connect providers once on
+    your Mac (`opencode auth login`); sandboxes reuse them.

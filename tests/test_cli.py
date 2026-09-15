@@ -130,3 +130,39 @@ def test_sandbox_up_mount_error_is_clean(monkeypatch, tmp_path):
         app, ["sandbox", "up", "--backend", "docker",
               "--name", "demo", "--mount", str(tmp_path / "nope")])
     assert result.exit_code != 0
+
+
+def test_sandbox_up_with_local_tools_end_to_end(monkeypatch, tmp_path):
+    from kyber.sandbox import tools as tools_mod
+
+    monkeypatch.setenv("KYBER_HOME", str(tmp_path))
+    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "tok-live")
+    result = runner.invoke(
+        app, ["sandbox", "up", "--backend", "local", "--allow-unsafe",
+              "--name", "demo", "--with", "claude", "--yes"])
+    assert result.exit_code == 0, result.output
+    assert "claude" in result.output
+    assert tools_mod.is_consented(tools_mod.load_manifest("claude"))
+    out = runner.invoke(
+        app, ["sandbox", "exec", "--backend", "local", "--allow-unsafe",
+              "demo", "--cmd", "echo token=$CLAUDE_CODE_OAUTH_TOKEN"])
+    assert out.exit_code == 0, out.output
+    assert "token=tok-live" in out.output
+
+
+def test_sandbox_build_unknown_tool_is_clean_error():
+    result = runner.invoke(app, ["sandbox", "build", "--with", "nope"])
+    assert result.exit_code == 1
+    assert "unknown tool" in result.output
+
+
+def test_sandbox_tools_and_consent_commands(monkeypatch, tmp_path):
+    monkeypatch.setenv("KYBER_HOME", str(tmp_path))
+    result = runner.invoke(app, ["sandbox", "tools"])
+    assert result.exit_code == 0, result.output
+    assert "claude" in result.output and "codex" in result.output
+    result = runner.invoke(app, ["sandbox", "consent"])
+    assert result.exit_code == 0
+    assert "pending" in result.output
+    result = runner.invoke(app, ["sandbox", "consent", "--revoke", "claude"])
+    assert "No consent grant" in result.output

@@ -101,3 +101,59 @@ def test_up_mount_passes_through_to_docker(monkeypatch, tmp_path):
     monkeypatch.setattr(shell_mod, "up", fake_up)
     backends.up("demo", backend="docker", mount=str(ws))
     assert seen.get("host_mount") == str(ws)
+
+
+def test_up_with_tools_selects_flavor_and_strips_key(tmp_path, monkeypatch):
+    from kyber.sandbox import shell as shell_mod
+    from kyber.sandbox import tools as tools_mod
+
+    monkeypatch.setenv("KYBER_HOME", str(tmp_path))
+    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "tok")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-stale")
+    tools_mod.grant_consent(tools_mod.load_manifest("claude"))
+    monkeypatch.setattr(shell_mod, "image_present", lambda tag, client=None: True)
+    seen = {}
+
+    def fake_up(name, **kwargs):
+        seen.update(kwargs)
+        from kyber.sandbox.common import SandboxInfo
+        return SandboxInfo(name=name, container="c", network="n",
+                           volume="v", image=kwargs["image"], backend="docker")
+
+    monkeypatch.setattr(shell_mod, "up", fake_up)
+    info = backends.up("demo", backend="docker", tools=["claude"], subscription=True)
+    assert info.image == "kyber-sandbox:with-claude"
+    assert seen["env"].get("CLAUDE_CODE_OAUTH_TOKEN") == "tok"
+    assert "ANTHROPIC_API_KEY" not in seen["env"]
+
+
+def test_up_with_tools_missing_flavor_hints_build(tmp_path, monkeypatch):
+    from kyber.sandbox import shell as shell_mod
+    from kyber.sandbox import tools as tools_mod
+
+    monkeypatch.setenv("KYBER_HOME", str(tmp_path))
+    tools_mod.grant_consent(tools_mod.load_manifest("claude"))
+    monkeypatch.setattr(shell_mod, "image_present", lambda tag, client=None: False)
+    with pytest.raises(SandboxError, match="build --with claude"):
+        backends.up("demo", backend="docker", tools=["claude"])
+
+
+def test_up_with_tools_needs_consent(tmp_path, monkeypatch):
+    monkeypatch.setenv("KYBER_HOME", str(tmp_path))
+    with pytest.raises(SandboxError, match="needs consent"):
+        backends.up("demo", backend="docker", tools=["codex"])
+
+
+def test_up_local_stores_auth_keys_and_subscription(tmp_path, monkeypatch):
+    from kyber.sandbox import tools as tools_mod
+
+    monkeypatch.setenv("KYBER_HOME", str(tmp_path))
+    tools_mod.grant_consent(tools_mod.load_manifest("claude"))
+    info = backends.up("demo", backend="local", allow_unsafe=True,
+                       tools=["claude"], subscription=True)
+    assert info.backend == "local"
+    import json as _json
+
+    rec = _json.loads((tmp_path / "sandboxes.json").read_text())["demo"]
+    assert rec["auth_keys"] == ["CLAUDE_CODE_OAUTH_TOKEN"]
+    assert rec["subscription"] is True

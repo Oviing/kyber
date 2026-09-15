@@ -1,0 +1,19 @@
+# Codex — baked Linux build + host auth file (no re-login).
+schema: kyber-tool/v1
+id: codex
+display: Codex CLI
+description: OpenAI's terminal agent. Reuses your host ChatGPT/API login.
+install:
+  - npm install -g @openai/codex
+dirs:
+  - /home/sandbox/.codex
+check: codex --version
+auth:
+  env: []
+  files:
+    - src: ~/.codex/auth.json
+      dest: /home/sandbox/.codex/auth.json
+      mode: rw
+  notes: >-
+    Mounts your host ~/.codex/auth.json (read-write: Codex refreshes tokens).
+    Log in once on your Mac (`codex login`); never again per sandbox.

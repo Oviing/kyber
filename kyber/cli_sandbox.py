@@ -28,9 +28,36 @@ def up(
     build: bool = typer.Option(False, help="Build the sandbox image first (docker backend)"),
     mount: str = typer.Option("", help="Host dir to bind as /work (docker backend; "
                                "agent can touch exactly this dir, host tools see it live)"),
+    with_tools: str = typer.Option("", "--with", help="Comma-separated tool flavors baked in "
+                                    "(e.g. --with claude,codex): no reinstall, "
+                                    "auth forwarded with consent"),
+    yes: bool = typer.Option(False, help="Grant tool auth consent without asking"),
+    subscription: bool = typer.Option(False, help="Strip ANTHROPIC_API_KEY from the "
+                                         "sandbox so subscription billing always wins"),
 ):
     """Create and start an isolated sandbox."""
+    from kyber.sandbox import tools as tools_mod
+
     try:
+        tool_ids = tools_mod.parse_id_list(with_tools)
+        auth = tools_mod.resolve_auth(tool_ids) if tool_ids else None
+        conflict = tools_mod.subscription_conflict()
+        if conflict and tool_ids and not subscription:
+            typer.echo(f"WARNING: {conflict}")
+        if auth:
+            for gap in auth.missing:
+                typer.echo(f"Note: {gap} (tool may still work, or log in on host first)")
+        for tool_id in tool_ids:
+            manifest = tools_mod.load_manifest(tool_id)
+            if not tools_mod.is_consented(manifest):
+                typer.echo(tools_mod.consent_report(tool_id))
+                granted = yes or typer.confirm(
+                    f"Forward {manifest.display} auth into the sandbox?",
+                    default=False)
+                if not granted:
+                    typer.echo("Aborted (consent required for tool auth).")
+                    raise typer.Exit(1)
+                tools_mod.grant_consent(manifest)
         if backend.strip().lower() == "local" and allow_unsafe:
             typer.echo(local.UNSAFE_WARNING)
         if build:
@@ -39,18 +66,24 @@ def up(
             typer.echo("Build done.")
         info = backends.up(name, backend=backend, image=image, offline=offline,
                            memory=memory, cpus=cpus, allow_unsafe=allow_unsafe,
-                           mount=mount or None)
+                           mount=mount or None, tools=tool_ids or None,
+                           tool_auth=auth, subscription=subscription)
     except SandboxError as e:
         typer.echo(f"Error: {e}")
         raise typer.Exit(1)
     if info.backend == "docker":
         work = f"host mount {info.volume}" if (mount or None) else f"volume {info.volume}"
-        typer.echo(f"Sandbox {info.name!r} up (container {info.container}, {work}).")
+        extras = f" tools={','.join(tool_ids)}" if tool_ids else ""
+        typer.echo(f"Sandbox {info.name!r} up (container {info.container}, {work}{extras}).")
         typer.echo(f"Enter it: kyber sandbox shell {info.name}")
     else:
         typer.echo(f"Local sandbox {info.name!r} up at {info.volume} (NOT container-isolated).")
         typer.echo(f"Enter it: kyber sandbox shell --backend local --allow-unsafe {info.name}")
-    typer.echo("Inside, install your agent e.g.: npm i -g opencode && opencode")
+    if tool_ids:
+        typer.echo("Tools baked in: {} (auth forwarded, no reinstall/login)".format(
+            ", ".join(tool_ids)))
+    else:
+        typer.echo("Inside, install your agent e.g.: npm i -g opencode && opencode")
 
 
 @sandbox_app.command("shell")
@@ -169,15 +202,73 @@ def down_cmd(
 def build_cmd(
     tag: str = typer.Option(policies.SANDBOX_IMAGE, help="Image tag to build"),
     dockerfile: str = typer.Option("sandbox/images/Dockerfile.sandbox-agent"),
+    with_tools: str = typer.Option("", "--with", help="Bake tool flavors in (e.g. --with "
+                                    "claude,codex); flavor gets its own tag"),
 ):
     """Build the sandbox image (needs a running Docker daemon)."""
+    from kyber.sandbox import tools as tools_mod
+
     try:
-        typer.echo(f"Building {tag} from {dockerfile} ...")
-        shell.build_image(dockerfile=dockerfile, tag=tag)
+        tool_ids = tools_mod.parse_id_list(with_tools)
+        if tool_ids:
+            unknown = [i for i in tool_ids if i not in tools_mod.available_ids()]
+            if unknown:
+                raise SandboxError(
+                    f"unknown tool(s): {', '.join(unknown)}. "
+                    f"Available: {', '.join(tools_mod.available_ids())}")
+            typer.echo(f"Baking tools into flavor: {', '.join(tool_ids)} ...")
+            built = shell.build_image(dockerfile=dockerfile,
+                                      tag=None if tag == policies.SANDBOX_IMAGE else tag,
+                                      with_tools=tool_ids)
+        else:
+            typer.echo(f"Building {tag} from {dockerfile} ...")
+            built = shell.build_image(dockerfile=dockerfile, tag=tag)
     except SandboxError as e:
         typer.echo(f"Error: {e}")
         raise typer.Exit(1)
-    typer.echo(f"Built {tag}.")
+    typer.echo(f"Built {built}.")
+
+
+@sandbox_app.command("tools")
+def tools_cmd():
+    """List agent tool flavors (built-in + ~/.kyber/tools.d)."""
+    from kyber.sandbox import tools as tools_mod
+
+    try:
+        manifests = tools_mod.list_manifests()
+    except SandboxError as e:
+        typer.echo(f"Error: {e}")
+        raise typer.Exit(1)
+    if not manifests:
+        typer.echo("No tool manifests. Company tools live in ~/.kyber/tools.d/<id>.yaml")
+        return
+    for m in manifests:
+        auth_bits = ([f"env:{k}" for k in m.auth_env]
+                     + [f"file:{f.src}->[{f.mode}]" for f in m.auth_files])
+        typer.echo(f"{m.id} [{m.source}] — {m.display}: {m.description}")
+        typer.echo("   auth: {} | check: {}".format(
+            ", ".join(auth_bits) or "none", m.check))
+
+
+@sandbox_app.command("consent")
+def consent_cmd(revoke: str = typer.Option("", help="Revoke consent for a tool id")):
+    """Review or revoke tool-auth consent grants."""
+    from kyber.sandbox import tools as tools_mod
+
+    if revoke:
+        if tools_mod.revoke_consent(revoke.strip().lower()):
+            typer.echo(f"Consent revoked for {revoke.strip().lower()!r}.")
+        else:
+            typer.echo(f"No consent grant for {revoke.strip().lower()!r}.")
+        return
+    try:
+        manifests = tools_mod.list_manifests()
+    except SandboxError as e:
+        typer.echo(f"Error: {e}")
+        raise typer.Exit(1)
+    for m in manifests:
+        state = "granted" if tools_mod.is_consented(m) else "pending"
+        typer.echo(f"{m.id}: {state}")
 
 
 @sandbox_app.command("view")

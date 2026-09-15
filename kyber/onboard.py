@@ -114,3 +114,25 @@ def sandbox_identity_status(image: str = SANDBOX_IMAGE) -> tuple[Optional[bool],
     if not ok:
         return None, "identity layer unknown (daemon unreachable)"
     return False, "image predates the terminal identity layer — run `kyber sandbox build`"
+
+
+def tool_readiness() -> list[tuple[str, str, str, str]]:
+    """(tool id, auth state, consent state, detail) per known tool. Host-side only."""
+    from kyber.sandbox import tools as tools_mod
+
+    try:
+        manifests = tools_mod.list_manifests()
+    except Exception as e:
+        return [("tools", "error", "error", str(e))]
+    rows: list[tuple[str, str, str, str]] = []
+    for m in manifests:
+        try:
+            resolved = tools_mod.resolve_auth([m.id])
+        except Exception as e:
+            rows.append((m.id, "error", "pending", str(e)))
+            continue
+        auth_state = "ready" if not resolved.missing else "missing-auth"
+        consent_state = "granted" if tools_mod.is_consented(m) else "pending"
+        detail = "; ".join(resolved.missing) if resolved.missing else m.display
+        rows.append((m.id, auth_state, consent_state, detail))
+    return rows

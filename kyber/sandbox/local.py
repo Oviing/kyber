@@ -131,8 +131,13 @@ def _require_offline_enforceable() -> None:
 
 
 def up(name: str, offline: bool = False, allow_unsafe: bool = False,
-       env: Optional[dict] = None) -> SandboxInfo:
-    """Create a local workspace session."""
+       env: Optional[dict] = None, auth_keys: Optional[list] = None,
+       subscription: bool = False) -> SandboxInfo:
+    """Create a local workspace session.
+
+    `auth_keys` stores consented tool auth KEY NAMES only (values re-read
+    live); `subscription` strips ANTHROPIC_API_KEY so plan billing wins.
+    """
     require_unsafe(allow_unsafe)
     _check_name(name)
     if offline:
@@ -148,6 +153,8 @@ def up(name: str, offline: bool = False, allow_unsafe: bool = False,
         raise SandboxError(f"could not create workspace {ws}: {e}") from e
     store[name] = {"backend": "local", "workspace": ws, "offline": offline,
                    "offline_enforced": offline,  # True only if seatbelt probe passed at up
+                   "auth_keys": sorted(set(auth_keys or [])),
+                   "subscription": bool(subscription),
                    "created": time.strftime("%Y-%m-%dT%H:%M:%S")}
     _save_store(store)
     audit("local-up", f"{name} workspace={ws} offline={offline}")
@@ -164,6 +171,21 @@ def _session(name: str) -> dict:
         raise SandboxError(f"local sandbox {name!r} not found "
                            f"(kyber sandbox up --backend local --allow-unsafe --name {name})")
     return rec
+
+
+def _session_extra_env(rec: dict) -> dict:
+    """Live values for consented tool auth keys. Names stored, values re-read.
+
+    Secrets are never persisted in the session store — only key names, so
+    rotating a token on the host takes effect on the next exec.
+    """
+    keys = tuple(rec.get("auth_keys") or [])
+    if not keys:
+        return {}
+    env = policies.passthrough_env(extra_keys=keys)
+    if rec.get("subscription"):
+        env.pop("ANTHROPIC_API_KEY", None)
+    return env
 
 
 def _limit_resources(timeout: int):
@@ -198,7 +220,9 @@ def exec_cmd(name: str, cmd: str, timeout: int = 60,
         argv = ["/bin/sh", "-c", cmd]
     audit("local-exec", f"{name} {cmd[:200]}")
     try:
-        proc = subprocess.run(argv, cwd=ws, env={**scrubbed_env(), "HOME": ws},
+        proc = subprocess.run(argv, cwd=ws,
+                              env={**scrubbed_env(), **_session_extra_env(rec),
+                                   "HOME": ws},
                               capture_output=True, text=True, timeout=timeout,
                               preexec_fn=lambda: _limit_resources(timeout), check=False)
     except subprocess.TimeoutExpired:
@@ -228,7 +252,8 @@ def interactive_spec(name: str, allow_unsafe: bool = False) -> tuple[list[str], 
     shell_bin = os.environ.get("SHELL", "/bin/bash")
     if not os.path.exists(shell_bin):
         shell_bin = "/bin/bash" if os.path.exists("/bin/bash") else "/bin/sh"
-    return [shell_bin, "-i"], ws, {**scrubbed_env(), "HOME": ws}
+    return [shell_bin, "-i"], ws, {**scrubbed_env(), **_session_extra_env(rec),
+                                      "HOME": ws}
 
 
 def logs(name: str, tail: int = 100) -> str:

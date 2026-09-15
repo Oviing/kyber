@@ -79,6 +79,25 @@ def _docker(client=None):
             "`kyber sandbox up --backend local --allow-unsafe --name demo`") from e
 
 
+def _validate_extra_mounts(extra_mounts: Optional[list]) -> list[dict]:
+    """Defense-in-depth re-check for consented auth mounts (resolve_auth is first)."""
+    from kyber.sandbox.policies import SANDBOX_WORKDIR as _work
+
+    clean: list[dict] = []
+    for mnt in extra_mounts or []:
+        src = str((mnt or {}).get("src") or "")
+        dest = str((mnt or {}).get("dest") or "")
+        mode = str((mnt or {}).get("mode") or "ro").lower()
+        if not os.path.isfile(src) or os.path.isdir(src):
+            raise SandboxError(f"auth mount source missing or not a file: {src!r}")
+        if not dest.startswith("/") or dest in ("/", _work) or dest.startswith(_work + "/"):
+            raise SandboxError(f"auth mount dest must be absolute and outside /work: {dest!r}")
+        if mode not in ("ro", "rw"):
+            raise SandboxError(f"auth mount mode must be ro/rw: {mode!r}")
+        clean.append({"src": os.path.abspath(src), "dest": dest, "mode": mode})
+    return clean
+
+
 def validate_host_mount(path: str) -> str:
     """Validate an explicit `--mount` host dir. Returns its absolute path."""
     from kyber.sandbox.common import home_dir as _kyber_home
@@ -103,12 +122,15 @@ def up(
     keep_volume: bool = True,  # kept for symmetry with down(); volumes persist by default
     env: Optional[dict] = None,
     host_mount: Optional[str] = None,
+    extra_mounts: Optional[list] = None,
     client=None,
 ) -> SandboxInfo:
     """Create network + workspace (/work) + hardened container.
 
     /work maps to exactly one source: a dedicated named volume, or one
     explicit host dir via ``host_mount`` (validated, never $HOME//~/.kyber).
+    ``extra_mounts`` carries consented single-file auth mounts
+    ([{src, dest, mode}]) for agent tool flavors.
 
     Raises SandboxError with an actionable message (never a traceback).
     Full egress by default; ``offline=True`` creates an internal network.
@@ -150,6 +172,9 @@ def up(
             cname, nname, image=image, limits=limits,
             workspace_volume=None if mount_src else vname,
             host_mount=mount_src, env=env)
+        for mnt in _validate_extra_mounts(extra_mounts):
+            vols = kwargs.setdefault("volumes", {})
+            vols[mnt["src"]] = {"bind": mnt["dest"], "mode": mnt["mode"]}
         kwargs["labels"] = {LABEL: name}
         dc.containers.run(**kwargs)
     except Exception as e:
@@ -367,9 +392,33 @@ def resolve_dockerfile(dockerfile: str = DEFAULT_DOCKERFILE) -> str:
     raise SandboxError(f"Dockerfile not found (tried: {tried}). Pass --dockerfile explicitly.")
 
 
+def _write_flavor_dockerfile(ids: list[str], base_tag: str, context_dir: str) -> str:
+    """Write the generated flavor stage next to the base Dockerfile. Returns path."""
+    import hashlib
+
+    from kyber.sandbox import tools as tools_mod
+
+    content = tools_mod.flavor_dockerfile(ids, base_tag)
+    digest = hashlib.sha1(" ".join(sorted(ids)).encode()).hexdigest()[:8]
+    path = os.path.join(context_dir, f"Dockerfile.flavor-{digest}")
+    try:
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(content)
+    except OSError as e:
+        raise SandboxError(f"could not write flavor Dockerfile: {e}") from e
+    return path
+
+
 def build_image(dockerfile: str = DEFAULT_DOCKERFILE,
-                tag: str = SANDBOX_IMAGE) -> str:
-    """Build the sandbox image via `docker build`. Returns the tag."""
+                tag: str | None = None,
+                with_tools: list[str] | None = None) -> str:
+    """Build the sandbox image via `docker build`. Returns the tag.
+
+    With `with_tools`, builds the base first if absent, then a flavor stage
+    (`FROM base` + tool installs) tagged deterministically per tool set.
+    """
+    from kyber.sandbox import tools as tools_mod
+
     if not docker_env.cli_found():
         raise SandboxError("docker CLI not found — install Docker Desktop or "
                            "`brew install colima docker` first")
@@ -377,15 +426,34 @@ def build_image(dockerfile: str = DEFAULT_DOCKERFILE,
     if not ok:
         raise SandboxError(detail)
     dockerfile_abs = resolve_dockerfile(dockerfile)
+
+    context = os.path.dirname(dockerfile_abs) or "."
+    base_tag = tag or SANDBOX_IMAGE
+    if not with_tools:
+        _run_build(context, dockerfile_abs, base_tag)
+        return base_tag
+    if not image_present(base_tag):
+        _run_build(context, dockerfile_abs, base_tag)
+    flavor_tag = tools_mod.flavor_tag(sorted(with_tools), base_tag)
+    flavor_df = _write_flavor_dockerfile(sorted(with_tools), base_tag, context)
+    try:
+        _run_build(context, flavor_df, flavor_tag)
+    finally:
+        try:
+            os.remove(flavor_df)
+        except OSError:
+            pass
+    return flavor_tag
+
+
+def _run_build(context: str, dockerfile_abs: str, tag: str) -> None:
     import subprocess
 
-    cmd = ["docker", "build", "-f", dockerfile_abs, "-t", tag,
-           os.path.dirname(dockerfile_abs) or "."]
+    cmd = ["docker", "build", "-f", dockerfile_abs, "-t", tag, context]
     proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
     if proc.returncode != 0:
         raise SandboxError(f"docker build failed:\n{(proc.stderr or proc.stdout)[-3000:]}")
     _audit("build", tag)
-    return tag
 
 
 def image_present(tag: str = SANDBOX_IMAGE, client=None) -> bool:

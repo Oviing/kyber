@@ -1,0 +1,19 @@
+# Gemini CLI — baked Linux build + host OAuth creds (no re-login).
+schema: kyber-tool/v1
+id: gemini
+display: Gemini CLI
+description: Google's terminal agent. Reuses your host Google OAuth login.
+install:
+  - npm install -g @google/gemini-cli
+dirs:
+  - /home/sandbox/.gemini
+check: gemini --version
+auth:
+  env: []
+  files:
+    - src: ~/.gemini/oauth_creds.json
+      dest: /home/sandbox/.gemini/oauth_creds.json
+      mode: rw
+  notes: >-
+    Mounts your host ~/.gemini/oauth_creds.json (read-write: Google SDKs
+    refresh OAuth tokens). Log in once on your Mac; never again per sandbox.

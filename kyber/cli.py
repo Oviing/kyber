@@ -48,6 +48,13 @@ def init(check_only: bool = typer.Option(False, help="Only report status, change
         typer.echo("  [..] docker CLI not found — containers unavailable; "
                    "use `kyber sandbox up --backend local --allow-unsafe --name demo`")
     typer.echo("  [ok] local backend available (opt-in unsafe: needs --allow-unsafe)")
+    from kyber.sandbox import tools as tools_mod
+
+    try:
+        tools_dir = tools_mod.ensure_user_dir()
+        typer.echo(f"  [ok] company tools dir ready ({tools_dir})")
+    except Exception as e:
+        typer.echo(f"  [..] company tools dir unavailable ({e})")
 
     env_path = os.path.join(os.getcwd(), ".env")
     example = os.path.join(os.getcwd(), ".env.example")
@@ -104,6 +111,8 @@ def doctor():
     if ok is False:
         lines.append(f"identity layer: {detail}")
     lines.append("local backend: available (opt-in unsafe, needs --allow-unsafe)")
+    for tool_id, auth_state, consent_state, detail in onboard.tool_readiness():
+        lines.append(f"tool {tool_id}: auth={auth_state} consent={consent_state} ({detail})")
     keys = onboard.passthrough_keys_present()
     lines.append("agent keys: {}".format(", ".join(keys) if keys else "none in env"))
     lines.append(f"home: {onboard.home_dir()} (sessions/audit log)")

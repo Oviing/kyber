@@ -62,11 +62,14 @@ IDENTITY_LABEL = "kyber.identity"
 # Host env vars passed through into the sandbox so the user can run their
 # own terminal agent (opencode / claude / codex / ...) with their own keys.
 # Values are read from the host at `up` time; never written to disk.
+# CLAUDE_CODE_OAUTH_TOKEN is the `claude setup-token` output: it lets a Pro/Max
+# subscription work inside the sandbox with no API key and no browser login.
 PASSTHROUGH_ENV_KEYS = (
     "LLM_API_KEY",
     "ANTHROPIC_API_KEY",
     "OPENAI_API_KEY",
     "GEMINI_API_KEY",
+    "CLAUDE_CODE_OAUTH_TOKEN",
     "KYBER_LLM_MODEL",
     "LLM_MODEL",
 )
@@ -151,12 +154,18 @@ def sandbox_container_kwargs(
     return kwargs
 
 
-def passthrough_env(host_env: Optional[dict] = None) -> dict:
-    """Subset of host env safe to inject into the sandbox (API keys only)."""
+def passthrough_env(host_env: Optional[dict] = None,
+                    extra_keys: tuple = ()) -> dict:
+    """Subset of host env safe to inject into the sandbox.
+
+    `extra_keys` opens the gate for tool-manifest auth vars (e.g. company
+    providers) — but only for keys the caller explicitly names, never wholesale.
+    """
     import os
 
     src = host_env if host_env is not None else os.environ
-    return {k: src[k] for k in PASSTHROUGH_ENV_KEYS if src.get(k)}
+    allowed = tuple(PASSTHROUGH_ENV_KEYS) + tuple(extra_keys or ())
+    return {k: src[k] for k in allowed if src.get(k)}
 
 
 def is_payload_allowed(cmd: str, mode: str = "strict") -> bool:

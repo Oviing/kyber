@@ -83,6 +83,32 @@ named volume — the agent can touch exactly that dir, host tools see it live.
 Never `$HOME`, `/`, or `~/.kyber`; `down --delete-workspace` never deletes
 a host mount.
 
+## Bring your own tools (no reinstall, no re-login)
+
+macOS binaries can't execute in the Linux sandbox — so tools enter once, two ways:
+
+```bash
+kyber sandbox build --with claude,codex      # bake Linux builds into a flavor image
+kyber sandbox up --name work --with claude,codex --yes
+# inside: claude / codex run immediately, already authenticated
+```
+
+- **Binaries**: flavors (`kyber-sandbox:with-claude-codex`, …) are built on top
+  of the base image; every `up --with` reuses them. Update with one rebuild.
+- **Auth**: Claude subscription via `CLAUDE_CODE_OAUTH_TOKEN` (`claude
+  setup-token` once on your Mac, no API key, no browser in the sandbox —
+  verify with `/status`); Codex/opencode/Gemini via single allowlisted
+  credential files (`~/.codex/auth.json`, …) mounted read-only unless the tool
+  refreshes tokens itself.
+- **Consent**: first `up --with` shows exactly what file/env goes where and
+  asks; grants are cached per tool *and* manifest content in
+  `~/.kyber/consent.json` (`kyber sandbox consent [--revoke <id>]`).
+- **Billing guard**: a stale `ANTHROPIC_API_KEY` outranks subscription auth —
+  Kyber warns, and `up --subscription` strips the key so your plan always wins.
+- **Company tools**: drop a `kyber-tool/v1` manifest in `~/.kyber/tools.d/`
+  (an example is created by `kyber init`); `build --with acme-coder` and
+  `kyber doctor` pick it up with zero code changes.
+
 What the local backend does: a workspace at `~/.kyber/workspaces/<name>/`,
 commands run there with a scrubbed env (only `PATH` + your agent API keys —
 `SSH_AUTH_SOCK` etc. never leak in), `HOME` jailed to the workspace, CPU

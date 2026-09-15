@@ -1,0 +1,18 @@
+# Claude Code — baked Linux build + subscription auth (no API key needed).
+schema: kyber-tool/v1
+id: claude
+display: Claude Code
+description: Anthropic's terminal agent. Billed to your Pro/Max subscription.
+install:
+  - npm install -g @anthropic-ai/claude-code
+dirs:
+  - /home/sandbox/.claude
+check: claude --version
+auth:
+  env:
+    - CLAUDE_CODE_OAUTH_TOKEN
+  files: []
+  notes: >-
+    Run `claude setup-token` once on your Mac, then
+    `export CLAUDE_CODE_OAUTH_TOKEN=<token>` before `kyber sandbox up --with claude`.
+    Verify inside with `claude` then `/status` (Login-method row, no API-key row).
