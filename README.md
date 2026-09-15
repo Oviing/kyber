@@ -109,6 +109,27 @@ kyber sandbox up --name work --with claude,codex --yes
   (an example is created by `kyber init`); `build --with acme-coder` and
   `kyber doctor` pick it up with zero code changes.
 
+### Worked example: private-registry tool (syntax-code)
+
+```bash
+# ~/.kyber/tools.d/syntax-code.yaml
+# install: npm install -g @syntax-dmc/syntax-code   (private GitHub Packages)
+# build_secrets: [{id: npmrc, src: ~/.npmrc}]        (BuildKit mount, never in layers)
+# auth: ro mount of ~/.syntax-code/config.toml (company API key)
+
+kyber sandbox tools                        # syntax-code [user] listed
+kyber doctor                               # tool syntax-code: auth=ready consent=…
+kyber sandbox build --with syntax-code     # needs a valid registry token in ~/.npmrc
+kyber sandbox up --name work --with syntax-code --yes
+# inside: syntax-code --version works, config already mounted, no login
+```
+
+If the build fails with npm `E401`, your host registry token is expired or
+lacks `read:packages` — refresh it on your Mac (`npm login
+--registry=https://npm.pkg.github.com`), verify with `npm view
+<pkg> version`, then rebuild. Refreshing the token never requires touching
+the manifest: secrets are mounted at build time, never baked in.
+
 What the local backend does: a workspace at `~/.kyber/workspaces/<name>/`,
 commands run there with a scrubbed env (only `PATH` + your agent API keys —
 `SSH_AUTH_SOCK` etc. never leak in), `HOME` jailed to the workspace, CPU

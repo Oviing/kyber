@@ -435,9 +435,10 @@ def build_image(dockerfile: str = DEFAULT_DOCKERFILE,
     if not image_present(base_tag):
         _run_build(context, dockerfile_abs, base_tag)
     flavor_tag = tools_mod.flavor_tag(sorted(with_tools), base_tag)
+    secrets = tools_mod.resolve_build_secrets(sorted(with_tools))
     flavor_df = _write_flavor_dockerfile(sorted(with_tools), base_tag, context)
     try:
-        _run_build(context, flavor_df, flavor_tag)
+        _run_build(context, flavor_df, flavor_tag, secrets=secrets)
     finally:
         try:
             os.remove(flavor_df)
@@ -446,14 +447,19 @@ def build_image(dockerfile: str = DEFAULT_DOCKERFILE,
     return flavor_tag
 
 
-def _run_build(context: str, dockerfile_abs: str, tag: str) -> None:
+def _run_build(context: str, dockerfile_abs: str, tag: str,
+               secrets: Optional[list] = None) -> None:
     import subprocess
 
-    cmd = ["docker", "build", "-f", dockerfile_abs, "-t", tag, context]
+    cmd = ["docker", "build", "-f", dockerfile_abs, "-t", tag]
+    for s in secrets or []:
+        cmd += ["--secret", f"id={s['id']},src={s['src']}"]
+    cmd.append(context)
     proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
     if proc.returncode != 0:
         raise SandboxError(f"docker build failed:\n{(proc.stderr or proc.stdout)[-3000:]}")
-    _audit("build", tag)
+    _audit("build", tag + (f" secrets={','.join(s['id'] for s in secrets)}"
+                           if secrets else ""))
 
 
 def image_present(tag: str = SANDBOX_IMAGE, client=None) -> bool:

@@ -185,3 +185,101 @@ def test_subscription_conflict():
     msg = tools_mod.subscription_conflict(
         {"ANTHROPIC_API_KEY": "x", "CLAUDE_CODE_OAUTH_TOKEN": "y"})
     assert msg is not None and "outranks" in msg
+
+
+def test_build_secrets_parse_and_flavor_run(tmp_path, monkeypatch):
+    monkeypatch.setenv("KYBER_HOME", str(tmp_path))
+    d = tools_mod.ensure_user_dir()
+    npmrc = tmp_path / ".npmrc"
+    npmrc.write_text("//registry/:_authToken=x\n")
+    with open(os.path.join(d, "priv.yaml"), "w", encoding="utf-8") as fh:
+        fh.write(f"""\
+schema: kyber-tool/v1
+id: priv
+display: Priv
+description: x
+install: ["npm install -g @acme/priv"]
+dirs: [/home/sandbox/.priv]
+check: priv --version
+build_secrets:
+  - id: npmrc
+    src: {npmrc}
+auth:
+  env: []
+  files: []
+""")
+    m = tools_mod.load_manifest("priv")
+    assert m.build_secrets[0].id == "npmrc"
+    df = tools_mod.flavor_dockerfile(["priv"], "base:latest")
+    assert "--mount=type=secret,id=npmrc,target=/root/.npmrc" in df
+    secrets = tools_mod.resolve_build_secrets(["priv"])
+    assert secrets == [{"id": "npmrc", "src": str(npmrc)}]
+
+
+def test_build_secrets_reject_bad_shape(tmp_path, monkeypatch):
+    monkeypatch.setenv("KYBER_HOME", str(tmp_path))
+    d = tools_mod.ensure_user_dir()
+    with open(os.path.join(d, "badsec.yaml"), "w", encoding="utf-8") as fh:
+        fh.write("""\
+schema: kyber-tool/v1
+id: badsec
+display: x
+description: x
+install: ["echo hi"]
+dirs: [/home/sandbox/.x]
+check: x --version
+build_secrets: ["nope"]
+auth:
+  env: []
+  files: []
+""")
+    with pytest.raises(SandboxError, match="build_secrets"):
+        tools_mod.load_manifest("badsec")
+
+
+def test_resolve_build_secrets_missing_file(tmp_path, monkeypatch):
+    monkeypatch.setenv("KYBER_HOME", str(tmp_path))
+    d = tools_mod.ensure_user_dir()
+    with open(os.path.join(d, "gone.yaml"), "w", encoding="utf-8") as fh:
+        fh.write("""\
+schema: kyber-tool/v1
+id: gone
+display: x
+description: x
+install: ["echo hi"]
+dirs: [/home/sandbox/.x]
+check: x --version
+build_secrets:
+  - id: npmrc
+    src: /nonexistent/.npmrc
+auth:
+  env: []
+  files: []
+""")
+    with pytest.raises(SandboxError, match="missing"):
+        tools_mod.resolve_build_secrets(["gone"])
+
+
+def test_run_build_passes_secret_flags(monkeypatch, tmp_path):
+    from kyber.sandbox import shell as shell_mod
+
+    seen = {}
+
+    class Done:
+        returncode = 0
+        stdout = ""
+        stderr = ""
+
+    import subprocess as _sp
+
+    def fake_run(cmd, **kwargs):
+        seen["cmd"] = cmd
+        return Done()
+
+    monkeypatch.setattr(_sp, "run", fake_run)
+    monkeypatch.setenv("KYBER_HOME", str(tmp_path))
+    shell_mod._run_build(str(tmp_path), "/x/Dockerfile", "img:t",
+                         secrets=[{"id": "npmrc", "src": "/Users/me/.npmrc"}])
+    assert "--secret" in seen["cmd"]
+    assert "id=npmrc,src=/Users/me/.npmrc" in seen["cmd"]
+    assert seen["cmd"][-1] == str(tmp_path)

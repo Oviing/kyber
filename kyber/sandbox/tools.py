@@ -15,6 +15,8 @@ then `~/.kyber/tools.d/*.yaml` for company tools):
   install: ["npm install -g @acme/coder-cli"]   # RUN verbatim, as root, in flavor stage
   dirs: [/home/sandbox/.acme-coder]     # created + chowned in flavor stage
   check: acme-coder --version           # `doctor` readiness probe (runs in image)
+  build_secrets:                        # optional: private-registry creds for build only
+    - {id: npmrc, src: ~/.npmrc}        # via BuildKit --mount (never in layers)
   auth:
     env: [ACME_API_KEY]                 # forwarded from host env (values never stored)
     files:                              # single files only — never dirs, never globs
@@ -49,6 +51,10 @@ install:
 dirs:
   - /home/sandbox/.acme-coder
 check: acme-coder --version
+# Private registry? Uncomment: token stays out of layers via BuildKit secret.
+# build_secrets:
+#   - id: npmrc
+#     src: ~/.npmrc
 auth:
   env:
     - ACME_API_KEY
@@ -60,6 +66,12 @@ auth:
     Log in once on your Mac; sandboxes reuse it. Prefer ro mounts; use rw only
     when the tool refreshes tokens itself.
 """
+
+
+@dataclass(frozen=True)
+class BuildSecret:
+    id: str   # BuildKit secret id referenced by --mount in install RUNs
+    src: str  # host absolute path (expanded), e.g. ~/.npmrc
 
 
 @dataclass(frozen=True)
@@ -79,6 +91,7 @@ class ToolManifest:
     check: str
     auth_env: tuple
     auth_files: tuple  # tuple[AuthFile, ...]
+    build_secrets: tuple  # tuple[BuildSecret, ...]
     notes: str
     source: str  # "builtin" | "user"
 
@@ -174,7 +187,47 @@ def _parse_manifest(path: str, source: str) -> ToolManifest:
         description=str(data.get("description") or ""),
         install=tuple(str(s) for s in install), dirs=dirs, check=check,
         auth_env=auth_env, auth_files=tuple(files),
+        build_secrets=_parse_build_secrets(data.get("build_secrets") or [], err),
         notes=str((auth.get("notes")) or ""), source=source)
+
+
+def _parse_build_secrets(raw: object, err) -> tuple:
+    """Optional private-registry credentials for the build only.
+
+    Secrets travel via BuildKit `--mount=type=secret` (never ENV/ARG), so they
+    leave no trace in layers or history. Existence is validated at build time,
+    not parse time, so `tools` listings never break over a missing file.
+    """
+    if not isinstance(raw, list):
+        raise err("build_secrets must be a list")
+    out: list[BuildSecret] = []
+    for entry in raw:
+        if not isinstance(entry, dict):
+            raise err("build_secrets entries must be mappings")
+        sid = str(entry.get("id") or "")
+        src = os.path.abspath(os.path.expanduser(str(entry.get("src") or "")))
+        if not TOOL_ID_RE.fullmatch(sid):
+            raise err(f"build_secrets id {sid!r} must match [a-z0-9_-]+")
+        if not src or not os.path.isabs(src):
+            raise err("build_secrets src must be an absolute host path")
+        out.append(BuildSecret(id=sid, src=src))
+    return tuple(out)
+
+
+def resolve_build_secrets(ids: list[str]) -> list[dict]:
+    """[{id, src}] for a flavor build. Raises if a secret file is missing."""
+    secrets: dict[str, str] = {}
+    for tool_id in ids:
+        for s in load_manifest(tool_id).build_secrets:
+            secrets[s.id] = s.src
+    resolved: list[dict] = []
+    for sid, src in sorted(secrets.items()):
+        if not os.path.isfile(src) or os.path.isdir(src):
+            raise SandboxError(
+                f"build secret {sid!r} missing: {src} not found on host. "
+                f"Log in to the private registry on your Mac first.")
+        resolved.append({"id": sid, "src": src})
+    return resolved
 
 
 def list_manifests() -> list[ToolManifest]:
@@ -232,15 +285,32 @@ def flavor_tag(ids: list[str], base_tag: str = "") -> str:
     return f"{base}:with-{slug}" if slug else (base_tag or SANDBOX_IMAGE)
 
 
+def _secret_mounts(m) -> str:
+    """`--mount=type=secret,...` flags for a tool's install RUN (BuildKit only)."""
+    parts = []
+    for s in m.build_secrets:
+        # Mounted at the path each tool expects its config (npm reads ~/.npmrc
+        # as root during build, i.e. /root/.npmrc). Convention: <id> maps to a
+        # well-known target; npmrc is the only supported id for now.
+        target = "/root/.npmrc" if s.id == "npmrc" else f"/run/secrets/{s.id}"
+        parts.append(f"--mount=type=secret,id={s.id},target={target}")
+    return " ".join(parts)
+
+
 def flavor_dockerfile(ids: list[str], base_tag: str) -> str:
-    """Generated flavor stage: base image + tool installs + owned dirs."""
+    """Generated flavor stage: base image + tool installs + owned dirs.
+
+    One RUN per tool (better layer caching); tools declaring build_secrets get
+    a `--mount=type=secret` RUN so registry tokens never land in layers.
+    """
     manifests = [load_manifest(i) for i in ids]
-    lines = [f"FROM {base_tag}", "USER root", "RUN set -eux \\"]
-    steps: list[str] = []
+    lines = [f"FROM {base_tag}", "USER root"]
     for m in manifests:
-        steps.append(f"echo '== kyber tool: {m.id} =='")
-        steps.extend(m.install)
-    lines.append(" && \\\n    ".join(steps))
+        mount_flags = _secret_mounts(m)
+        run_open = f"RUN {mount_flags} set -eux \\" if mount_flags else "RUN set -eux \\"
+        steps = [f"echo '== kyber tool: {m.id} =='"] + list(m.install)
+        lines.append(run_open)
+        lines.append(" && \\\n    ".join(steps))
     for m in manifests:
         for d in m.dirs:
             # mkdir -p leaves intermediate parents root-owned: re-chown the
