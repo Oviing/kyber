@@ -1,6 +1,9 @@
+from __future__ import annotations
+
 import json
 import os
 import time
+from typing import Optional
 
 import httpx
 import typer
@@ -50,9 +53,9 @@ def read_text_file(path: str) -> str:
 
 
 @app.command()
-def submit(file: str | None = typer.Option(None, help="Snippet file to upload"),
-           repo: str | None = typer.Option(None, help="Git repo URL"),
-           url: str | None = typer.Option(None, help="Live service URL (requires --consent-owned)"),
+def submit(file: Optional[str] = typer.Option(None, help="Snippet file to upload"),
+           repo: Optional[str] = typer.Option(None, help="Git repo URL"),
+           url: Optional[str] = typer.Option(None, help="Live service URL (requires --consent-owned)"),
            language: str = typer.Option("auto"),
            profile: str = typer.Option("quick"),
            consent_owned: bool = typer.Option(False, help="Confirm you own/have permission to test the target"),

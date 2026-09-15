@@ -1,3 +1,7 @@
+from __future__ import annotations
+
+from typing import Optional
+
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from sqlalchemy.orm import Session
 
@@ -17,7 +21,7 @@ def create_target(body: TargetCreate, db: Session = Depends(get_db), _=Depends(r
         raise HTTPException(400, "repo_url required for type=repo")
     if body.type.value == "url" and not body.service_url:
         raise HTTPException(400, "service_url required for type=url")
-    archive_path: str | None = None
+    archive_path: Optional[str] = None
     if body.type.value == "archive":
         if not body.archive_sha256:
             raise HTTPException(400, "archive_sha256 required for type=archive (upload first)")

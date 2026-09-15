@@ -1,5 +1,8 @@
 """Sandbox security policies: single source of truth for isolation guarantees."""
+from __future__ import annotations
+
 from dataclasses import dataclass
+from typing import Optional
 
 BLOCKED_EGRESS_CIDRS = ["169.254.169.254/32", "169.254.170.2/32"]  # cloud metadata
 ALLOWLIST_PROXY_DOMAINS: list[str] = []  # empty = no egress for untrusted code
@@ -32,7 +35,7 @@ class SandboxLimits:
 DEFAULT_LIMITS = SandboxLimits()
 
 
-def container_kwargs(image: str, name: str, network: str | None, limits: SandboxLimits) -> dict:
+def container_kwargs(image: str, name: str, network: Optional[str], limits: SandboxLimits) -> dict:
     kwargs: dict = {
         "image": image,
         "name": name,

@@ -3,7 +3,10 @@
 Each probe returns a dict finding when the marker is observed, else None.
 Probes run from the attacker container against the target container or static file.
 """
+from __future__ import annotations
+
 import re
+from typing import Optional
 
 PROBES = [
     {
@@ -54,7 +57,7 @@ PROBES = [
 ]
 
 
-def evaluate_probe(probe_id: str, response_text: str, location: str) -> dict | None:
+def evaluate_probe(probe_id: str, response_text: str, location: str) -> Optional[dict]:
     probe = next((p for p in PROBES if p["id"] == probe_id), None)
     if not probe:
         return None

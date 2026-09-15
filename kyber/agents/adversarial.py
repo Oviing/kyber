@@ -1,4 +1,8 @@
 """Adversarial agent: jailbreak probes + insecure AI-code static checks."""
+from __future__ import annotations
+
+from typing import Optional
+
 from kyber.tools.adversarial import JAILBREAK_PROMPTS, evaluate_jailbreak, scan_ai_code
 
 
@@ -10,5 +14,5 @@ def run_adversarial_static(snippet: str) -> list[dict]:
     return scan_ai_code(snippet or "")
 
 
-def score_model_output(prompt_id: str, output: str) -> dict | None:
+def score_model_output(prompt_id: str, output: str) -> Optional[dict]:
     return evaluate_jailbreak(prompt_id, output)

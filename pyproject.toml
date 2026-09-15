@@ -5,7 +5,7 @@ description = "Agent red-team sandbox platform (MVP)"
 readme = "README.md"
 authors = [{name = "Oviing", email = "joel.kischkel@icloud.com"}]
 license = {text = "MIT"}
-requires-python = ">=3.11"
+requires-python = ">=3.9"
 dependencies = [
   "fastapi>=0.110",
   "uvicorn[standard]>=0.29",
@@ -43,9 +43,12 @@ include = ["kyber*"]
 
 [tool.ruff]
 line-length = 100
+target-version = "py39"
 
 [tool.ruff.lint]
-ignore = ["BLE001", "S110", "S112", "S101", "B008"]
+# UP045 (X | None) is intentionally disabled: the package supports Python 3.9,
+# where PEP 604 unions fail at runtime (pydantic/SQLAlchemy/typer eval them).
+ignore = ["BLE001", "S110", "S112", "S101", "B008", "UP045"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

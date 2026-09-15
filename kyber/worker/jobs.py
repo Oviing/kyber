@@ -1,5 +1,5 @@
 """RQ worker entrypoint: loads target, provisions sandbox, runs agent graph, stores findings."""
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 
 from kyber.agents.graph import run_graph
 from kyber.agents.judge import judge
@@ -153,7 +153,7 @@ def run_scan(scan_id: str) -> None:
                            evidence=(f.get("evidence") or "")[:2000], tool=f.get("tool"),
                            extra={}))
         scan.status = ScanStatus.done.value
-        scan.finished_at = datetime.now(UTC)
+        scan.finished_at = datetime.now(timezone.utc)
         db.commit()
     except Exception as e:
         try:

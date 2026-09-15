@@ -1,6 +1,9 @@
 """SAST/SCA/DAST tool wrappers. Each runs a command inside the sandbox and parses output."""
+from __future__ import annotations
+
 import json
 import re
+from typing import Optional
 
 
 def parse_semgrep(output: str) -> list[dict]:
@@ -80,7 +83,7 @@ def parse_nuclei(output: str) -> list[dict]:
     return findings
 
 
-def _cwe_from_text(text: str) -> str | None:
+def _cwe_from_text(text: str) -> Optional[str]:
     m = re.search(r"CWE-(\d+)", text)
     return f"CWE-{m.group(1)}" if m else None
 

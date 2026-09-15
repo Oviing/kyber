@@ -1,6 +1,9 @@
 """Docker-backed sandbox manager. One isolated network + containers per scan."""
+from __future__ import annotations
+
 import time
 import uuid
+from typing import Optional
 
 from kyber.config import settings
 from kyber.sandbox import policies
@@ -111,7 +114,7 @@ class SandboxManager:
         except Exception:
             pass
 
-    def run_with_cleanup(self, scan_id: str, mode: str, fn, timeout_s: int | None = None):
+    def run_with_cleanup(self, scan_id: str, mode: str, fn, timeout_s: Optional[int] = None):
         timeout_s = timeout_s or settings.sandbox_timeout_quick
         sb = self.provision(scan_id, mode)
         started = time.time()

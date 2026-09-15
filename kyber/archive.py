@@ -6,11 +6,14 @@ inside the container with the same guards defined here. The pure-python
 helpers below are shared by both paths (sandbox extractor script embeds the
 same checks) and by the no-Docker local fallback.
 """
+from __future__ import annotations
+
 import hashlib
 import io
 import os
 import stat
 import zipfile
+from typing import Optional
 
 MAX_UPLOAD_BYTES = 50 * 1024 * 1024
 MAX_EXTRACTED_BYTES = 200 * 1024 * 1024
@@ -111,7 +114,7 @@ def store_archive(data: bytes, filename: str) -> tuple[str, str]:
     return path, sha
 
 
-def find_archive_by_sha256(sha: str) -> str | None:
+def find_archive_by_sha256(sha: str) -> Optional[str]:
     path = os.path.join(_archive_dir(), f"{sha}.zip")
     return path if os.path.exists(path) else None
 
