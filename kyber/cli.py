@@ -153,6 +153,125 @@ def report(scan_id: str, format: str = typer.Option("json"),
 
 
 @app.command()
+def init(check_only: bool = typer.Option(False, help="Only report status, change nothing"),
+         yes: bool = typer.Option(False, help="Create missing files without asking")):
+    """One-command setup: checks prerequisites, bootstraps .env, prints next steps."""
+    from kyber import onboard
+
+    typer.echo("Kyber setup check")
+    problems: list[str] = []
+
+    # 1. Python (informational: install itself requires >= 3.9)
+    typer.echo(f"  [ok] python {sys.version.split()[0]}")
+
+    # 2. Optional extras
+    llm_ok, llm_detail = onboard.llm_ready()
+    if onboard.litellm_installed():
+        typer.echo("  [ok] llm extra installed (litellm)")
+    else:
+        typer.echo('  [..] llm extra missing (only needed for `kyber agent` with a real model: pip install -e ".[llm]")')
+    typer.echo(f"  [{'ok' if llm_ok else '..'}] model backend: {llm_detail}")
+
+    # 3. .env bootstrap (production parity; local dev works without it)
+    env_path = os.path.join(os.getcwd(), ".env")
+    example = os.path.join(os.getcwd(), ".env.example")
+    if os.path.exists(env_path):
+        typer.echo("  [ok] .env present")
+    elif os.path.exists(example):
+        if check_only:
+            typer.echo("  [..] .env missing (would create from .env.example)")
+        elif yes or typer.confirm("No .env found. Create one from .env.example?", default=True):
+            try:
+                with open(example, encoding="utf-8") as fh:
+                    content = fh.read()
+                with open(env_path, "w", encoding="utf-8") as fh:
+                    fh.write(content)
+                typer.echo("  [ok] created .env from .env.example")
+            except OSError as e:
+                problems.append(f"could not create .env ({e})")
+                typer.echo(f"  [FAIL] could not create .env ({e})")
+        else:
+            typer.echo("  [..] skipped .env (local sqlite defaults still work)")
+    else:
+        typer.echo("  [..] no .env or .env.example found (local sqlite defaults still work)")
+
+    # 4. Docker / sandbox images (manual builds stay manual — report only)
+    if docker_available():
+        typer.echo("  [ok] docker found")
+        ok, detail = onboard.sandbox_images_status()
+        if ok:
+            typer.echo(f"  [ok] {detail}")
+        elif ok is None:
+            typer.echo(f"  [..] {detail} — could not verify sandbox images (scans may use limited fallback mode)")
+        else:
+            typer.echo(f"  [..] {detail} — scans use limited fallback mode until you build them")
+            typer.echo("       (see README production section for the docker build commands)")
+    else:
+        typer.echo("  [..] docker not found — scans use limited fallback mode (fine for trying out)")
+
+    # 5. API
+    if is_healthy("http://localhost:8000"):
+        typer.echo("  [ok] API already healthy at http://localhost:8000")
+    else:
+        typer.echo("  [..] API not running (starts automatically on first scan, or run `kyber up`)")
+
+    if problems:
+        typer.echo("Setup FAILED:")
+        for p in problems:
+            typer.echo(f"  - {p}")
+        raise typer.Exit(1)
+    typer.echo("Next: `kyber demo` (1-minute example) or `kyber` (guided scan of your own target).")
+
+
+@app.command()
+def demo(api: str = typer.Option("http://localhost:8000"),
+         api_key: str = typer.Option("dev-key-1", envvar="KYBER_API_KEY"),
+         save: Optional[str] = typer.Option(None, help="Save report to this path"),
+         no_save: bool = typer.Option(False, help="Skip the save prompt")):
+    """Run a 1-minute example scan on a bundled (deliberately vulnerable) sample."""
+    from kyber import onboard
+
+    typer.echo("Kyber demo — scanning a bundled sample target")
+    typer.echo("The sample contains a hardcoded secret and a command-injection sink, "
+               "so a working setup always reports findings here.")
+    try:
+        state = ensure_api_up(api)
+    except ServerError as e:
+        typer.echo(f"Cannot reach API: {e}")
+        raise typer.Exit(1)
+    typer.echo("API started." if state == "started" else "API ready (already running).")
+    hint = onboard.docker_hint()
+    if hint:
+        typer.echo(f"Note: {hint}")
+    c = _client(api, api_key)
+    try:
+        t = c.post("/v1/targets", json={"type": "snippet", "language": "python",
+                                        "snippet": onboard.DEMO_CODE}).json()
+        s = c.post("/v1/scans", json={"target_id": t["id"], "profile": "quick",
+                                      "consent_owned": False}).json()
+    except httpx.HTTPError as e:
+        typer.echo(f"Error talking to the API: {e}")
+        raise typer.Exit(1)
+    scan_id = s["id"]
+    final = _wait_for_scan(c, scan_id)
+    if final.get("status") != "done":
+        typer.echo("Demo scan ended with status: {} ({})".format(
+            final.get("status"), final.get("error") or "no detail"))
+        raise typer.Exit(1)
+    findings = _fetch_findings(c, scan_id)
+    _print_summary(scan_id, findings)
+    typer.echo("What happened: your sample → isolated scan → findings above. "
+               "Next try `kyber` with one of your own files, or "
+               "`kyber agent --goal \"...\"` to let an LLM drive.")
+    if save:
+        _save_findings(save, findings)
+    elif not no_save:
+        out = _prompt_save_path(scan_id)
+        if out:
+            _save_findings(out, findings)
+
+
+@app.command()
 def up(port: int = typer.Option(8000, help="Local port for the API"),
        foreground: bool = typer.Option(False, help="Run in foreground (Ctrl+C stops it)")):
     """Start the local API server (managed: stoppable with `kyber down`)."""
@@ -183,6 +302,8 @@ def down():
 def doctor(api: str = typer.Option("http://localhost:8000"),
            api_key: str = typer.Option("dev-key-1", envvar="KYBER_API_KEY")):
     """Diagnose the local setup: Python, API, port, storage, Docker, key."""
+    from kyber import onboard
+
     lines = []
     lines.append(f"python: {sys.version.split()[0]}")
     lines.append("api {}: {}".format(api, "healthy" if is_healthy(api) else "unreachable"))
@@ -200,9 +321,25 @@ def doctor(api: str = typer.Option("http://localhost:8000"),
         lines.append(f"artifact dir {d}: writable")
     except Exception as e:
         lines.append(f"artifact dir: PROBLEM ({e})")
-    lines.append("docker: {}".format("available" if docker_available() else "not found (fallback scans only)"))
+    if docker_available():
+        lines.append("docker: available")
+        _ok, detail = onboard.sandbox_images_status()
+        lines.append(f"sandbox images: {detail}")
+        if _ok is False:
+            lines.append("  build them per the README production section for full isolation")
+    else:
+        lines.append("docker: not found (fallback scans only)")
     lines.append("api key: {}".format(
         "from KYBER_API_KEY" if os.environ.get("KYBER_API_KEY") else "default dev key"))
+    llm_ok, llm_detail = onboard.llm_ready()
+    lines.append("llm backend: {}".format(
+        f"ready ({llm_detail})" if llm_ok
+        else f"not ready ({llm_detail}) — `kyber agent` will use the fallback sweep"))
+    mcp_path = onboard.mcp_config_path()
+    if mcp_path and os.path.exists(mcp_path):
+        lines.append(f"mcp: client config present at {mcp_path}")
+    else:
+        lines.append("mcp: not installed in a client yet (`kyber mcp --install` to set up)")
     lines.append(f"home: {home_dir()} (pid/log)")
     typer.echo("\n".join(lines))
 
@@ -217,6 +354,7 @@ def _guess_kind(value: str) -> str:
 
 
 def _prompt_kind(default: str = "file") -> str:
+    typer.echo("file: a source file or .zip archive | repo: a git URL | url: a live service you own")
     while True:
         kind = typer.prompt("Scan what?", default=default).strip().lower()
         if kind in ("file", "repo", "url"):
@@ -239,6 +377,9 @@ def _prompt_path() -> Optional[str]:
 
 
 def _prompt_profile(default: str = "quick") -> str:
+    from kyber import onboard
+
+    typer.echo(onboard.PROFILE_HELP)
     while True:
         p = typer.prompt("Profile?", default=default).strip().lower()
         if p in PROFILES:
@@ -289,7 +430,12 @@ def _save_findings(path: str, findings: list[dict[str, Any]]) -> None:
 def run_wizard(api: str, api_key: str, target: Optional[str] = None,
                profile: Optional[str] = None, consent_owned: bool = False) -> None:
     """Guided flow: ensure API is up, ask what to scan, run it, show findings."""
+    from kyber import onboard
+
     typer.echo("Kyber red-team sandbox — guided scan")
+    banner = onboard.first_run_banner()
+    if banner:
+        typer.echo(banner)
     try:
         state = ensure_api_up(api)
     except ServerError as e:
@@ -297,6 +443,9 @@ def run_wizard(api: str, api_key: str, target: Optional[str] = None,
         raise typer.Exit(1)
     started_here = state == "started"
     typer.echo("API started." if started_here else "API ready (already running).")
+    hint = onboard.docker_hint()
+    if hint:
+        typer.echo(f"Note: {hint}")
 
     kind: Optional[str] = None
     value: Optional[str] = None
@@ -384,6 +533,7 @@ def agent(target: Optional[str] = typer.Option(None, help="File path, repo URL, 
           consent_owned: bool = typer.Option(False, help="Permission to test a live URL target"),
           save: Optional[str] = typer.Option(None, help="Save report to this path (default prompts)"),
           no_save: bool = typer.Option(False, help="Skip the save prompt"),
+          fallback_ok: bool = typer.Option(False, help="Allow the deterministic fallback sweep without asking"),
           api: str = typer.Option("http://localhost:8000"),
           api_key: str = typer.Option("dev-key-1", envvar="KYBER_API_KEY")):
     """Prompt an LLM that does the work inside the Kyber sandbox.
@@ -392,6 +542,7 @@ def agent(target: Optional[str] = typer.Option(None, help="File path, repo URL, 
     Uses settings.llm_model via LiteLLM (pip install -e ".[llm]"); without a key
     it runs a deterministic fallback sweep so the command still returns value.
     """
+    from kyber import onboard
     from kyber.server import ServerError
 
     typer.echo("Kyber agent — LLM red-team in sandbox")
@@ -401,6 +552,21 @@ def agent(target: Optional[str] = typer.Option(None, help="File path, repo URL, 
         typer.echo(f"Cannot reach API: {e}")
         raise typer.Exit(1)
     typer.echo("API started." if state == "started" else "API ready (already running).")
+    hint = onboard.docker_hint()
+    if hint:
+        typer.echo(f"Note: {hint}")
+    llm_ok, llm_detail = onboard.llm_ready()
+    if llm_ok:
+        typer.echo(f"Model backend ready ({llm_detail}).")
+    elif fallback_ok:
+        typer.echo(f"No LLM backend ({llm_detail}); running deterministic fallback sweep (--fallback-ok).")
+    elif not typer.confirm(
+            f"No LLM backend found ({llm_detail}). "
+            "Run the deterministic fallback sweep instead (no model involved)?",
+            default=True):
+        typer.echo("Aborted. Install the llm extra and set LLM_MODEL/LLM_API_KEY, "
+                   "then retry — `kyber doctor` shows the details.")
+        return
 
     kind: Optional[str] = None
     value: Optional[str] = target
@@ -469,8 +635,17 @@ def agent(target: Optional[str] = typer.Option(None, help="File path, repo URL, 
 
 
 @app.command()
-def mcp():
+def mcp(install: bool = typer.Option(False, help="Install the server into an MCP client config"),
+        client: str = typer.Option("claude-desktop", help="MCP client (only claude-desktop)"),
+        command: str = typer.Option("kyber", help="Command the client should run"),
+        dry_run: bool = typer.Option(False, help="Print the config change without writing")):
     """Run the MCP server on stdio (for Claude Desktop / MCP clients)."""
+    if install or dry_run:
+        from kyber.onboard import install_mcp_client
+
+        ok, msg = install_mcp_client(client, command, dry_run=dry_run)
+        typer.echo(msg)
+        raise typer.Exit(0 if ok else 1)
     from kyber.mcp_server import serve_stdio
 
     serve_stdio()
