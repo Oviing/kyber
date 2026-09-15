@@ -23,10 +23,10 @@ kyber sandbox down demo           # destroy container + network (workspace kept)
 More commands:
 
 ```bash
-kyber sandbox ls                          # list sessions
-kyber sandbox exec demo -- "ls -la /work" # one command, non-interactive
-kyber sandbox logs demo                   # container logs
-kyber sandbox snapshot demo -o demo.tar   # export /work to host
+kyber sandbox ls                                # list sessions (docker + local)
+kyber sandbox exec demo --cmd "ls -la /work"    # one command, non-interactive
+kyber sandbox logs demo                         # container logs / audit entries
+kyber sandbox snapshot demo -o demo.tar         # export /work to host
 kyber sandbox down demo --delete-workspace
 kyber doctor
 ```
@@ -49,10 +49,37 @@ Single source of truth: `kyber/sandbox/policies.py` (open mode).
   makes it internal. Full egress is the default so agents can install tools.
 * Every host-initiated action is appended to `~/.kyber/sandbox-audit.log`.
 
+## Without Docker (opt-in local fallback)
+
+If no Docker daemon is running (`kyber doctor` says "daemon unreachable"),
+you have two options:
+
+1. Start one (macOS): `open -a Docker` or `colima start` — real isolation.
+2. Run without containers (no isolation boundary — accidents only, not malware):
+
+```bash
+kyber sandbox up --backend local --allow-unsafe --name demo
+kyber sandbox shell --backend local --allow-unsafe demo
+kyber sandbox exec --backend local --allow-unsafe demo --cmd "pytest -q"
+```
+
+What the local backend does: a workspace at `~/.kyber/workspaces/<name>/`,
+commands run there with a scrubbed env (only `PATH` + your agent API keys —
+`SSH_AUTH_SOCK` etc. never leak in), `HOME` jailed to the workspace, CPU
+time caps, wall-clock timeouts, and an audit trail. It refuses to run as
+root. `--offline` is only accepted when macOS `sandbox-exec` can actually
+enforce it (probed at `up` time — on recent macOS it can't, and `up`
+fails fast telling you so instead of pretending). Same session names can't
+exist in both backends at once.
+
 ## Layout
 
 - `kyber/sandbox/policies.py` isolation source of truth (strict legacy + open mode)
-- `kyber/sandbox/shell.py` session runtime (up/shell/exec/logs/snapshot/down/build)
+- `kyber/sandbox/docker_env.py` runtime detection (CLI-present vs daemon-reachable)
+- `kyber/sandbox/shell.py` docker session runtime (up/shell/exec/logs/snapshot/down/build)
+- `kyber/sandbox/local.py` opt-in unsafe local fallback (no daemon)
+- `kyber/sandbox/backends.py` `--backend auto|docker|local` dispatcher
+- `kyber/sandbox/common.py` shared errors/session/audit helpers
 - `kyber/sandbox/manager.py` legacy low-level Docker manager (kept, strict mode)
 - `kyber/cli_sandbox.py` `kyber sandbox ...` commands
 - `kyber/cli.py` `init`, `doctor`, bare-`kyber` help

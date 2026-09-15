@@ -24,16 +24,25 @@ def init(check_only: bool = typer.Option(False, help="Only report status, change
     typer.echo(f"  [ok] python {sys.version.split()[0]}")
 
     if onboard.docker_found():
-        typer.echo("  [ok] docker found")
+        typer.echo("  [ok] docker CLI found")
+        ok, detail = onboard.docker_daemon_status()
+        if ok:
+            typer.echo(f"  [ok] {detail}")
+        else:
+            typer.echo(f"  [..] {detail}")
         ok, detail = onboard.sandbox_image_status()
         if ok:
             typer.echo(f"  [ok] {detail}")
+        elif ok is None and "daemon" in detail:
+            pass  # daemon state already reported above; don't repeat it
         elif ok is None:
             typer.echo(f"  [..] {detail}")
         else:
             typer.echo(f"  [..] {detail} — run `kyber sandbox build`")
     else:
-        typer.echo("  [..] docker not found — install Docker to use the sandbox")
+        typer.echo("  [..] docker CLI not found — containers unavailable; "
+                   "use `kyber sandbox up --backend local --allow-unsafe --name demo`")
+    typer.echo("  [ok] local backend available (opt-in unsafe: needs --allow-unsafe)")
 
     env_path = os.path.join(os.getcwd(), ".env")
     example = os.path.join(os.getcwd(), ".env.example")
@@ -69,6 +78,7 @@ def init(check_only: bool = typer.Option(False, help="Only report status, change
             typer.echo(f"  - {p}")
         raise typer.Exit(1)
     typer.echo("Next: `kyber sandbox up --name demo` then `kyber sandbox shell demo`.")
+    typer.echo("No Docker daemon? `kyber sandbox up --backend local --allow-unsafe --name demo`.")
 
 
 @app.command()
@@ -78,11 +88,14 @@ def doctor():
 
     lines = []
     lines.append(f"python: {sys.version.split()[0]}")
-    lines.append("docker: {}".format("found" if onboard.docker_found() else "not found"))
+    lines.append("docker CLI: {}".format("found" if onboard.docker_found() else "not found"))
+    ok, detail = onboard.docker_daemon_status()
+    lines.append(f"docker daemon: {detail}")
     ok, detail = onboard.sandbox_image_status()
     lines.append(f"sandbox image: {detail}")
     if ok is False:
         lines.append("  build it with: kyber sandbox build")
+    lines.append("local backend: available (opt-in unsafe, needs --allow-unsafe)")
     keys = onboard.passthrough_keys_present()
     lines.append("agent keys: {}".format(", ".join(keys) if keys else "none in env"))
     lines.append(f"home: {onboard.home_dir()} (sessions/audit log)")
@@ -102,6 +115,7 @@ def callback(ctx: typer.Context):
         typer.echo("  kyber sandbox shell demo         open a terminal inside it")
         typer.echo("  # inside: npm i -g opencode && opencode   (or claude/codex/aider)")
         typer.echo("  kyber sandbox down demo          destroy it (workspace kept)")
+        typer.echo("  No daemon? kyber sandbox up --backend local --allow-unsafe --name demo")
         typer.echo("More: kyber --help, kyber sandbox --help, kyber doctor.")
 
 

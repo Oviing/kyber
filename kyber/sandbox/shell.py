@@ -14,47 +14,34 @@ safety comes from the container boundary (see policies.py):
 from __future__ import annotations
 
 import os
-import re
-import shutil
-import time
-from dataclasses import dataclass
 from typing import Optional
 
-from kyber.sandbox import policies
+from kyber.sandbox import docker_env, policies
+from kyber.sandbox.common import (
+    AUDIT_FILENAME,  # noqa: F401 - re-exported for backward compat
+    CONTAINER_PREFIX,
+    LABEL,
+    SandboxError,
+    SandboxInfo,
+    audit,
+    home_dir,
+    valid_name,
+)
 from kyber.sandbox.policies import OPEN_LIMITS, SANDBOX_IMAGE
 
-LABEL = "kyber.sandbox"
-CONTAINER_PREFIX = "kyber-sb-"
-AUDIT_FILENAME = "sandbox-audit.log"
-
-
-class SandboxError(RuntimeError):
-    pass
-
-
-def valid_name(name: str) -> bool:
-    return bool(re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}", name or ""))
-
-
-def _home_dir() -> str:
-    d = os.environ.get("KYBER_HOME") or os.path.join(os.path.expanduser("~"), ".kyber")
-    try:
-        os.makedirs(d, exist_ok=True)
-    except OSError:
-        pass
-    return d
-
-
-def _audit(action: str, detail: str = "") -> None:
-    try:
-        with open(os.path.join(_home_dir(), AUDIT_FILENAME), "a", encoding="utf-8") as fh:
-            fh.write(f"{time.strftime('%Y-%m-%dT%H:%M:%S')} {action} {detail[:300]}\n")
-    except OSError:
-        pass
+# Backward-compat aliases (private names used by older imports).
+_home_dir = home_dir
+_audit = audit
 
 
 def docker_available() -> bool:
-    return shutil.which("docker") is not None
+    """CLI on PATH (does NOT imply the daemon is up — see daemon_reachable)."""
+    return docker_env.cli_found()
+
+
+def daemon_reachable(timeout: int = 5) -> tuple[bool, str]:
+    """(ok, detail) — ok True only when a daemon actually answers."""
+    return docker_env.daemon_reachable(timeout=timeout)
 
 
 def container_name(name: str) -> str:
@@ -72,26 +59,24 @@ def volume_name(name: str) -> str:
 def _docker(client=None):
     if client is not None:
         return client
-    if not docker_available():
-        raise SandboxError("docker not found — install Docker to use the sandbox")
+    if not docker_env.cli_found():
+        raise SandboxError("docker CLI not found — install Docker Desktop or "
+                           "`brew install colima docker`, or run without containers: "
+                           "`kyber sandbox up --backend local --allow-unsafe --name demo`")
     try:
         import docker
     except ImportError as e:
         raise SandboxError("docker python package missing (pip install docker)") from e
     try:
-        return docker.from_env()
+        dc = docker.from_env()
+        dc.ping()
+        return dc
     except Exception as e:
-        raise SandboxError(f"cannot reach docker daemon: {e}") from e
-
-
-@dataclass
-class SandboxInfo:
-    name: str
-    container: str
-    network: str
-    volume: str
-    image: str
-    status: str = "running"
+        raise SandboxError(
+            f"docker daemon unreachable at {docker_env.socket_hint()}: {e}. "
+            "Start it (macOS: `open -a Docker` or `colima start`), then retry — "
+            "or run without containers: "
+            "`kyber sandbox up --backend local --allow-unsafe --name demo`") from e
 
 
 def up(
@@ -286,8 +271,12 @@ def down(name: str, keep_volume: bool = True, client=None) -> str:
 def build_image(dockerfile: str = "sandbox/images/Dockerfile.sandbox-agent",
                 tag: str = SANDBOX_IMAGE) -> str:
     """Build the sandbox image via `docker build`. Returns the tag."""
-    if not docker_available():
-        raise SandboxError("docker not found — install Docker first")
+    if not docker_env.cli_found():
+        raise SandboxError("docker CLI not found — install Docker Desktop or "
+                           "`brew install colima docker` first")
+    ok, detail = docker_env.daemon_reachable()
+    if not ok:
+        raise SandboxError(detail)
     import subprocess
 
     cmd = ["docker", "build", "-f", dockerfile, "-t", tag,

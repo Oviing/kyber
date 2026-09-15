@@ -6,11 +6,10 @@ All checks are best-effort and never raise — they return structured
 from __future__ import annotations
 
 import os
-import shutil
 import subprocess
 from typing import Optional
 
-from kyber.sandbox import policies
+from kyber.sandbox import docker_env, policies
 
 SANDBOX_IMAGE = policies.SANDBOX_IMAGE
 
@@ -49,13 +48,33 @@ def first_run_banner() -> Optional[str]:
 
 
 def docker_found() -> bool:
-    return shutil.which("docker") is not None
+    """Docker CLI on PATH (does NOT imply the daemon is up)."""
+    return docker_env.cli_found()
+
+
+def docker_daemon_status(timeout: int = 5) -> tuple[Optional[bool], str]:
+    """(True, ...) daemon answers; (False, ...) CLI missing or daemon down.
+
+    Returns None only when the check itself could not run.
+    """
+    if not docker_env.cli_found():
+        return False, "docker CLI not found"
+    try:
+        ok, detail = docker_env.daemon_reachable(timeout=timeout)
+    except Exception as e:
+        return None, f"docker check failed ({e})"
+    return ok, detail
 
 
 def sandbox_image_status(timeout: int = 10) -> tuple[Optional[bool], str]:
-    """Check the general sandbox image exists. None when docker is absent."""
-    if not docker_found():
-        return None, "docker not found"
+    """Check the general sandbox image exists. Preserves the daemon error tail."""
+    if not docker_env.cli_found():
+        return None, "docker CLI not found"
+    ok, daemon_detail = docker_daemon_status(timeout=timeout)
+    if not ok:
+        short = daemon_detail.split(". ")[0]
+        short = short[:117] + "..." if len(short) > 120 else short
+        return None, f"unknown ({short} — see daemon line)"
     try:
         out = subprocess.run(
             ["docker", "images", "--format", "{{.Repository}}:{{.Tag}}"],
@@ -63,7 +82,9 @@ def sandbox_image_status(timeout: int = 10) -> tuple[Optional[bool], str]:
     except Exception as e:
         return None, f"docker query failed ({e})"
     if out.returncode != 0:
-        return None, "docker query failed"
+        tail = ((out.stderr or out.stdout) or "").strip().splitlines()[-3:]
+        joined = " ".join(t.strip() for t in tail if t.strip())[:300]
+        return None, f"docker query failed: {joined}" if joined else "docker query failed"
     have = set((out.stdout or "").split())
     if SANDBOX_IMAGE in have:
         return True, f"sandbox image present ({SANDBOX_IMAGE})"

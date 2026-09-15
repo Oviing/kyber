@@ -2,11 +2,15 @@
 
 The old managed API server is gone (full pivot to local sandbox-first);
 this module keeps the small filesystem helpers the CLI still needs.
+Runtime detection lives in kyber.sandbox.docker_env (CLI-present vs
+daemon-reachable are different states); the functions here stay as
+thin backward-compatible wrappers.
 """
 from __future__ import annotations
 
 import os
-import shutil
+
+from kyber.sandbox import docker_env
 
 
 def home_dir() -> str:
@@ -20,4 +24,9 @@ def log_file() -> str:
 
 
 def docker_available() -> bool:
-    return shutil.which("docker") is not None
+    """Docker CLI on PATH (does NOT imply the daemon is up)."""
+    return docker_env.cli_found()
+
+
+def daemon_reachable(timeout: int = 5) -> tuple[bool, str]:
+    return docker_env.daemon_reachable(timeout=timeout)

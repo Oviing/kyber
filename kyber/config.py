@@ -7,6 +7,7 @@ class Settings(BaseSettings):
     sandbox_image: str = "kyber-sandbox:latest"
     sandbox_memory: str = "1g"
     sandbox_cpus: float = 1.0
+    sandbox_backend: str = "auto"  # auto | docker | local (CLI --backend overrides)
 
 
 settings = Settings()
