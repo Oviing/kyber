@@ -19,6 +19,11 @@ def plan_scan(target_type: str, language: str, profile: str) -> dict:
         steps = ["secret-scan", "ai-code-scan", "jailbreak-probes", "judge"]
         max_tool_calls = 15
         timeout_s = 600
+    elif profile == "agent":
+        steps = ["ls", "read", "secret-scan", "semgrep", "bandit", "safe-probes",
+                 "submit-findings", "judge"]
+        max_tool_calls = 25
+        timeout_s = 900
     else:  # full
         steps = ["secret-scan", "semgrep", "bandit", "sca", "safe-probes", "judge"]
         if mode == "dast":

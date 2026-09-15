@@ -11,7 +11,7 @@ from kyber.queue import enqueue_scan
 router = APIRouter(prefix="/v1/scans", tags=["scans"])
 
 PROFILE_TIMEOUTS = {"quick": settings.sandbox_timeout_quick, "full": settings.sandbox_timeout_full,
-                    "adversarial": 600}
+                    "adversarial": 600, "agent": 900}
 
 
 @router.post("")
@@ -24,7 +24,8 @@ def create_scan(body: ScanCreate, db: Session = Depends(get_db), _=Depends(requi
     timeout = body.timeout_s or PROFILE_TIMEOUTS.get(body.profile.value, 300)
     timeout = min(timeout, settings.sandbox_timeout_full)
     s = Scan(target_id=target.id, profile=body.profile.value, status=ScanStatus.queued.value,
-             consent_owned=body.consent_owned, timeout_s=timeout)
+             consent_owned=body.consent_owned, timeout_s=timeout,
+             goal=(body.goal or None))
     db.add(s)
     db.commit()
     db.refresh(s)
@@ -40,7 +41,8 @@ def get_scan(scan_id: str, db: Session = Depends(get_db), _=Depends(require_api_
     if not s:
         raise HTTPException(404, "scan not found")
     return {"id": s.id, "target_id": s.target_id, "profile": s.profile, "status": s.status,
-            "error": s.error, "timeout_s": s.timeout_s}
+            "error": s.error, "timeout_s": s.timeout_s,
+            "goal": getattr(s, "goal", None)}
 
 
 @router.get("/{scan_id}/findings")

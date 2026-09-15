@@ -192,7 +192,7 @@ print('\n'.join(out))
 
 
 def content_findings_for_files(files: list[tuple[str, str]], archive_name: str,
-                               profile: str = "quick") -> list[dict]:
+                                profile: str = "quick") -> list[dict]:
     """Regex-based findings over extracted text files (shared sandbox/fallback path)."""
     from kyber.tools.adversarial import scan_ai_code
     from kyber.tools.safe_probes import static_secret_scan
@@ -206,3 +206,47 @@ def content_findings_for_files(files: list[tuple[str, str]], archive_name: str,
             for f in scan_ai_code(text):
                 raw.append({**f, "location": loc})
     return raw
+
+
+def archive_inventory(data: bytes) -> dict:
+    """Summarize archive members for coverage reporting (never raises on bad zips)."""
+    try:
+        members = safe_member_list(data)
+    except ArchiveError as e:
+        return {"total": 0, "error": str(e)[:300], "sample": []}
+    import os
+
+    text_eligible = sum(1 for m in members
+                        if os.path.splitext(m.filename)[1].lower() in TEXT_EXTENSIONS)
+    return {"total": len(members),
+            "text_eligible": text_eligible,
+            "sample": [m.filename for m in members[:15]]}
+
+
+def coverage_finding(data: bytes, archive_name: str,
+                     files: list[tuple[str, str]]) -> Optional[dict]:
+    """Explain empty/thin results (e.g. binary-only .zip like .exe installers).
+
+    Returns an info-level finding, or None when coverage looks healthy.
+    """
+    if files:
+        return None
+    inv = archive_inventory(data)
+    if inv.get("error"):
+        return None  # validation errors are reported elsewhere
+    total = inv.get("total", 0)
+    sample = ", ".join(inv.get("sample", [])[:8]) or "?"
+    return {
+        "rule_id": "info/no-scannable-text",
+        "title": ("No scannable text files found "
+                  f"({total} member(s), 0 text). Likely a binary-only archive."),
+        "severity": "info",
+        "confidence": "high",
+        "location": archive_name,
+        "evidence": (f"members={total} text_eligible={inv.get('text_eligible', 0)} "
+                     f"sample=[{sample}]. Scannable extensions are source/config/text; "
+                     ".exe/.dll/.png etc. are skipped by design. "
+                     "Unzip and submit source files, or run an AV/sandbox detonation "
+                     "for binaries instead of static text scans.")[:2000],
+        "tool": "coverage",
+    }

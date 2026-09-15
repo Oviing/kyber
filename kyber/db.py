@@ -18,6 +18,7 @@ SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
 def init_db() -> None:
     Base.metadata.create_all(bind=engine)
     _ensure_archive_columns()
+    _ensure_scan_columns()
 
 
 def _ensure_archive_columns() -> None:
@@ -38,6 +39,24 @@ def _ensure_archive_columns() -> None:
             try:
                 with engine.begin() as conn:
                     conn.execute(text(f"ALTER TABLE targets ADD COLUMN {name} {ddl}"))
+            except Exception:
+                pass
+
+
+def _ensure_scan_columns() -> None:
+    """Add agent columns to pre-existing DBs (create_all skips existing tables)."""
+    from sqlalchemy import inspect, text
+
+    try:
+        existing = {c["name"] for c in inspect(engine).get_columns("scans")}
+    except Exception:
+        return
+    wanted = {"goal": "TEXT"}
+    for name, ddl in wanted.items():
+        if name not in existing:
+            try:
+                with engine.begin() as conn:
+                    conn.execute(text(f"ALTER TABLE scans ADD COLUMN {name} {ddl}"))
             except Exception:
                 pass
 

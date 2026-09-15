@@ -8,6 +8,9 @@ BLOCKED_EGRESS_CIDRS = ["169.254.169.254/32", "169.254.170.2/32"]  # cloud metad
 ALLOWLIST_PROXY_DOMAINS: list[str] = []  # empty = no egress for untrusted code
 
 # Destructive / out-of-scope patterns the exploiter must NEVER emit.
+# Checked case-insensitively against every sandbox exec (deterministic agents
+# and LLM-driven `sandbox_exec` alike). SSRF probes go through the structured
+# run_probe path, so raw cloud-metadata fetches are blocked here.
 FORBIDDEN_PAYLOADS = [
     "rm -rf /",
     "mkfs",
@@ -15,6 +18,15 @@ FORBIDDEN_PAYLOADS = [
     "shutdown",
     "drop table",
     "delete from",
+    "169.254.169.254",
+    "169.254.170.2",
+    "metadata.google.internal",
+    "nc -e",
+    "/dev/tcp/",
+    "chmod -r 777 /",
+    "dd if=",
+    "| sh",
+    "| bash",
 ]
 
 MAX_SNIPPET_BYTES = 1_000_000

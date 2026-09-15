@@ -5,18 +5,21 @@ from kyber.cli import app, looks_like_zip, read_text_file
 runner = CliRunner()
 
 
-def test_bare_kyber_prints_help_exit_zero():
-    result = runner.invoke(app, [])
+def test_bare_kyber_runs_wizard_without_traceback(monkeypatch):
+    import kyber.cli as cli_mod
+
+    monkeypatch.setattr(cli_mod, "ensure_api_up", lambda api: "reused")
+    result = runner.invoke(app, [], input="\n\n")
     assert result.exit_code == 0
-    assert "submit" in result.output
-    assert "status" in result.output
-    assert "report" in result.output
+    assert "Traceback" not in result.output
 
 
 def test_help_lists_commands():
     result = runner.invoke(app, ["--help"])
     assert result.exit_code == 0
     assert "submit" in result.output
+    for cmd in ("wizard", "up", "down", "doctor"):
+        assert cmd in result.output
 
 
 def test_read_text_file_ok(tmp_path):

@@ -9,6 +9,7 @@ from kyber.archive import (
     TEXT_EXTENSIONS,
     ArchiveError,
     content_findings_for_files,
+    coverage_finding,
     extract_text_files,
     load_archive_bytes,
 )
@@ -22,6 +23,41 @@ def _target_to_dict(t: Target) -> dict:
             "repo_url": t.repo_url, "service_url": t.service_url,
             "archive_path": t.archive_path, "archive_sha256": t.archive_sha256,
             "archive_name": t.archive_name or "archive.zip"}
+
+
+def _run_agent_sweep(tdict: dict, goal: str, exec_fn, profile: str = "quick",
+                     scan_id: str = "") -> list[dict]:
+    """LLM-driven sweep over the provisioned sandbox. Falls back deterministically."""
+    import json as _json
+    import os as _os
+
+    from kyber.agent.loop import run_agent_goal
+    from kyber.agent.tools import AgentToolbox
+
+    toolbox = AgentToolbox(exec_fn=exec_fn, target_type=tdict.get("type", "snippet"),
+                           service_url=tdict.get("service_url") or "",
+                           archive_name=tdict.get("archive_name", "target"))
+    out = run_agent_goal(goal, toolbox, llm_fn=None, max_steps=12)
+    findings = list(out["findings"])
+    if out.get("summary"):
+        findings.append({"rule_id": "agent/summary", "title": out["summary"][:300],
+                         "severity": "info", "confidence": "high",
+                         "location": tdict.get("archive_name", tdict.get("type", "agent")),
+                         "evidence": f"model={out.get('model')} steps={out.get('steps')}",
+                         "tool": "agent"})
+    if scan_id:
+        try:
+            from kyber.config import settings as _settings
+
+            d = _os.path.join(_settings.artifact_dir, "scans", scan_id)
+            _os.makedirs(d, exist_ok=True)
+            with open(_os.path.join(d, "agent_trace.json"), "w", encoding="utf-8") as fh:
+                _json.dump({"goal": goal, "model": out.get("model"),
+                            "steps": out.get("steps"), "trace": toolbox.trace,
+                            "summary": out.get("summary")}, fh, indent=2)
+        except Exception:
+            pass
+    return judge(findings)
 
 
 def _rebase_location(finding: dict, archive_name: str) -> dict:
@@ -63,6 +99,9 @@ def _scan_archive_in_sandbox(mgr: SandboxManager, sb, data: bytes, archive_name:
         if budget <= 0:
             break
     raw = content_findings_for_files(files, archive_name, profile)
+    cov = coverage_finding(data, archive_name, files)
+    if cov:
+        raw.append(cov)
     # SAST/SCA tools run against the extracted /work tree.
     for f in run_graph({"type": "snippet", "language": language, "snippet": ""},
                        profile, exec_fn):
@@ -75,6 +114,9 @@ def _scan_archive_fallback(data: bytes, archive_name: str, profile: str,
     """No-Docker path: validate + extract locally, regex scans + tool stubs."""
     files = extract_text_files(data)
     raw = content_findings_for_files(files, archive_name, profile)
+    cov = coverage_finding(data, archive_name, files)
+    if cov:
+        raw.append(cov)
     raw.extend(run_graph({"type": "snippet", "language": "auto", "snippet": ""},
                          profile, exec_fn or (lambda cmd: "")))
     return judge(raw)
@@ -108,8 +150,14 @@ def run_scan(scan_id: str) -> None:
                 if not tdict.get("archive_path"):
                     raise ArchiveError("archive target has no stored file")
                 data = load_archive_bytes(tdict["archive_path"])
-                return _scan_archive_in_sandbox(mgr, sb, data, tdict["archive_name"],
+                base = _scan_archive_in_sandbox(mgr, sb, data, tdict["archive_name"],
                                                 target.language, scan.profile, exec_fn)
+                if scan.profile == "agent":
+                    goal = getattr(scan, "goal", None) or "Find exploitable vulnerabilities."
+                    extra = _run_agent_sweep({**tdict, "type": "archive"}, goal, exec_fn,
+                                             scan_id=scan.id)
+                    return judge(list(base) + list(extra))
+                return base
 
             # Seed untrusted code into sandbox (no host mount).
             if tdict["type"] in ("snippet", "repo") and tdict.get("snippet"):
@@ -117,6 +165,12 @@ def run_scan(scan_id: str) -> None:
                     mgr.write_file(sb, "/work/target.txt", tdict["snippet"].encode()[:1_000_000])
                 except Exception:
                     pass
+
+            if scan.profile == "agent":
+                goal = getattr(scan, "goal", None) or "Find exploitable vulnerabilities."
+                base = run_graph(tdict, "quick", exec_fn)
+                extra = _run_agent_sweep(tdict, goal, exec_fn, scan_id=scan.id)
+                return judge(list(base) + list(extra))
 
             def dast_fetch_fn(req: dict) -> str:
                 # curl from attacker container to target; confined to sandbox network.
@@ -139,9 +193,20 @@ def run_scan(scan_id: str) -> None:
                         if not tdict.get("archive_path"):
                             raise ArchiveError("archive target has no stored file") from e
                         data = load_archive_bytes(tdict["archive_path"])
-                        findings = _scan_archive_fallback(data, tdict["archive_name"], scan.profile)
+                        prof = "quick" if scan.profile == "agent" else scan.profile
+                        findings = _scan_archive_fallback(data, tdict["archive_name"], prof)
+                        if scan.profile == "agent":
+                            goal = getattr(scan, "goal", None) or "Find exploitable vulnerabilities."
+                            findings = judge(list(findings) + _run_agent_sweep(
+                                {**tdict, "type": "archive"}, goal, lambda cmd: "",
+                                scan_id=scan.id))
                     else:
-                        findings = run_graph(tdict, scan.profile, lambda cmd: "", dast_fetch_fn=None)
+                        prof = "quick" if scan.profile == "agent" else scan.profile
+                        findings = run_graph(tdict, prof, lambda cmd: "", dast_fetch_fn=None)
+                        if scan.profile == "agent":
+                            goal = getattr(scan, "goal", None) or "Find exploitable vulnerabilities."
+                            findings = judge(list(findings) + _run_agent_sweep(
+                                tdict, goal, lambda cmd: "", scan_id=scan.id))
                 except Exception as e2:
                     raise e2 from e
 

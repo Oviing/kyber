@@ -26,6 +26,7 @@ class ScanProfile(str, Enum):
     quick = "quick"
     full = "full"
     adversarial = "adversarial"
+    agent = "agent"
 
 
 class ScanStatus(str, Enum):
@@ -62,6 +63,7 @@ class Scan(Base):
     consent_owned: Mapped[bool] = mapped_column(default=False)
     timeout_s: Mapped[int] = mapped_column(default=300)
     error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    goal: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     finished_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
 
@@ -99,6 +101,7 @@ class ScanCreate(BaseModel):
     profile: ScanProfile = ScanProfile.quick
     consent_owned: bool = False
     timeout_s: Optional[int] = None
+    goal: Optional[str] = Field(default=None, max_length=4000)
 
 
 class FindingOut(BaseModel):
