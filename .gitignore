@@ -1,0 +1,21 @@
+# Caches
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+
+# App runtime
+.env
+kyber.db
+*.db
+
+# OS / editors
+.DS_Store
+.idea/
+.vscode/
