@@ -1,0 +1,10 @@
+FROM python:3.11-slim
+RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates git \
+ && rm -rf /var/lib/apt/lists/*
+RUN pip install --no-cache-dir semgrep bandit trivy 2>/dev/null || pip install --no-cache-dir semgrep bandit
+RUN curl -sfL https://github.com/projectdiscovery/nuclei/releases/latest/download/nuclei_linux_arm64.zip -o /tmp/n.zip 2>/dev/null || true
+RUN useradd -u 65532 -m sandbox || true
+RUN mkdir -p /work && chmod 755 /work
+USER 65532
+WORKDIR /work
+CMD ["sleep", "3600"]

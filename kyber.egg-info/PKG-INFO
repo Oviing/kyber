@@ -1,0 +1,26 @@
+Metadata-Version: 2.4
+Name: kyber
+Version: 0.1.0
+Summary: Agent red-team sandbox platform (MVP)
+Requires-Python: >=3.11
+Requires-Dist: fastapi>=0.110
+Requires-Dist: uvicorn[standard]>=0.29
+Requires-Dist: pydantic>=2.6
+Requires-Dist: pydantic-settings>=2.2
+Requires-Dist: sqlalchemy>=2.0
+Requires-Dist: alembic>=1.13
+Requires-Dist: psycopg2-binary>=2.9
+Requires-Dist: redis>=5.0
+Requires-Dist: rq>=1.16
+Requires-Dist: docker>=7.0
+Requires-Dist: httpx>=0.27
+Requires-Dist: typer>=0.12
+Requires-Dist: pyyaml>=6.0
+Requires-Dist: python-multipart>=0.0.18
+Provides-Extra: llm
+Requires-Dist: litellm>=1.40; extra == "llm"
+Requires-Dist: langgraph>=0.1; extra == "llm"
+Provides-Extra: dev
+Requires-Dist: pytest>=8.0; extra == "dev"
+Requires-Dist: pytest-asyncio>=0.23; extra == "dev"
+Requires-Dist: ruff>=0.4; extra == "dev"

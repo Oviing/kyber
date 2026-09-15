@@ -1,0 +1,6 @@
+FROM node:20-slim
+RUN useradd -u 65532 -m sandbox || true
+RUN mkdir -p /work && chmod 755 /work
+USER 65532
+WORKDIR /work
+CMD ["sleep", "3600"]
