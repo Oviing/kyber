@@ -150,9 +150,25 @@ def test_wizard_yes_is_not_a_filename(monkeypatch, tmp_path):
     target.write_text("x = 1", encoding="utf-8")
     result = runner.invoke(app, ["wizard"], input=f"\n{target}\n\ny\nyes\n")
     assert result.exit_code == 0, result.output
-    assert "Saved to report-s9.json" in result.output
+    # report lands in the invocation dir (cwd), echoed as an absolute path
+    assert f"Saved to {tmp_path / 'report-s9.json'}" in result.output
     assert (tmp_path / "report-s9.json").exists()
     assert not (tmp_path / "yes").exists()
+
+
+def test_wizard_default_report_lands_in_cwd(monkeypatch, tmp_path):
+    # Empty answer at the path prompt saves report-<id>.json where kyber runs.
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(cli, "ensure_api_up", lambda api: "reused")
+    monkeypatch.setattr(cli, "_do_submit", lambda *a, **k: {"id": "s7", "status": "done"})
+    monkeypatch.setattr(cli, "_wait_for_scan", lambda c, sid: {"status": "done"})
+    monkeypatch.setattr(cli, "_fetch_findings", lambda c, sid: [])
+    target = tmp_path / "v.py"
+    target.write_text("x = 1", encoding="utf-8")
+    result = runner.invoke(app, ["wizard"], input=f"\n{target}\n\ny\n\n")
+    assert result.exit_code == 0, result.output
+    assert f"Saved to {tmp_path / 'report-s7.json'}" in result.output
+    assert (tmp_path / "report-s7.json").exists()
 
 
 # -- MCP --

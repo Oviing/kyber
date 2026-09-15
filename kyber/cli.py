@@ -419,12 +419,14 @@ def _prompt_save_path(scan_id: str) -> Optional[str]:
 
 
 def _save_findings(path: str, findings: list[dict[str, Any]]) -> None:
+    """Save findings next to where kyber was invoked (cwd-anchored, absolute echo)."""
+    abs_path = os.path.abspath(os.path.expanduser(path))
     try:
-        with open(path, "w", encoding="utf-8") as fh:
+        with open(abs_path, "w", encoding="utf-8") as fh:
             json.dump(findings, fh, indent=2)
-        typer.echo(f"Saved to {path}")
+        typer.echo(f"Saved to {abs_path}")
     except OSError as e:
-        typer.echo(f"Could not save: {e}")
+        typer.echo(f"Could not save to {abs_path}: {e}")
 
 
 def run_wizard(api: str, api_key: str, target: Optional[str] = None,
